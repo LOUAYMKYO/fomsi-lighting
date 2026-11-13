@@ -1,16 +1,19 @@
+
 {
-  "name": "backend",
+  "name": "fomsi-lighting",
   "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
+  "description": "FOMSI Lighting e-commerce website",
+  "main": "src/server.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "start": "node src/server.js",
+    "dev": "nodemon src/server.js"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
+    "bcrypt": "^6.0.0",
     "bcryptjs": "^3.0.3",
     "cors": "^2.8.6",
     "dotenv": "^18.0.7",
@@ -19,7 +22,8 @@
     "jsonwebtoken": "^9.0.3",
     "morgan": "^1.12.1",
     "msnodesqlv8": "^5.5.0",
-    "mssql": "^12.7.4"
+    "mssql": "^12.7.4",
+    "pg": "^8.23.1"
   },
   "devDependencies": {
     "nodemon": "^3.1.14"

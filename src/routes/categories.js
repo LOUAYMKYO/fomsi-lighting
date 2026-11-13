@@ -1,30 +1,40 @@
 
 const express = require("express");
 const router = express.Router();
-const { getPool, sql } = require("../config/db");
+const { getPool } = require("../config/db");
 
-// GET: Fetch all categories
+const {
+  authenticateToken,
+  requireAdmin
+} = require("../middleware/auth");
+
+// GET: Fetch all categories (public)
 router.get("/", async (req, res) => {
   try {
     const pool = await getPool();
 
-    const result = await pool.request().query(`
-      SELECT CategoryID, Name, Description, CreatedAt
-      FROM dbo.Categories
-      ORDER BY Name ASC;
+    const result = await pool.query(`
+      SELECT
+        "CategoryID",
+        "Name",
+        "Description",
+        "CreatedAt"
+      FROM "Categories"
+      ORDER BY "Name" ASC;
     `);
 
-    res.json(result.recordset);
+    return res.json(result.rows);
   } catch (error) {
     console.error("Error fetching categories:", error.message);
-    res.status(500).json({
+
+    return res.status(500).json({
       message: "Failed to fetch categories."
     });
   }
 });
 
-// POST: Create a category
-router.post("/", async (req, res) => {
+// POST: Create a category (admin only)
+router.post("/", authenticateToken, requireAdmin, async (req, res) => {
   try {
     const { Name, Description = null } = req.body;
 
@@ -49,39 +59,40 @@ router.post("/", async (req, res) => {
 
     const pool = await getPool();
 
-    const result = await pool.request()
-      .input("Name", sql.NVarChar(100), Name.trim())
-      .input("Description", sql.NVarChar(500), Description)
-      .query(`
-        INSERT INTO dbo.Categories (Name, Description)
-        OUTPUT
-          INSERTED.CategoryID,
-          INSERTED.Name,
-          INSERTED.Description,
-          INSERTED.CreatedAt
-        VALUES (@Name, @Description);
-      `);
+    const result = await pool.query(
+      `
+        INSERT INTO "Categories" ("Name", "Description")
+        VALUES ($1, $2)
+        RETURNING
+          "CategoryID",
+          "Name",
+          "Description",
+          "CreatedAt";
+      `,
+      [Name.trim(), Description]
+    );
 
-    res.status(201).json({
+    return res.status(201).json({
       message: "Category created successfully.",
-      category: result.recordset[0]
+      category: result.rows[0]
     });
   } catch (error) {
-    if (error.number === 2627 || error.number === 2601) {
+    if (error.code === "23505") {
       return res.status(409).json({
         message: "A category with this name already exists."
       });
     }
 
     console.error("Error creating category:", error.message);
-    res.status(500).json({
+
+    return res.status(500).json({
       message: "Failed to create category."
     });
   }
 });
 
-// PUT: Update a category
-router.put("/:id", async (req, res) => {
+// PUT: Update a category (admin only)
+router.put("/:id", authenticateToken, requireAdmin, async (req, res) => {
   try {
     const categoryID = Number(req.params.id);
     const { Name, Description = null } = req.body;
@@ -113,51 +124,52 @@ router.put("/:id", async (req, res) => {
 
     const pool = await getPool();
 
-    const result = await pool.request()
-      .input("CategoryID", sql.Int, categoryID)
-      .input("Name", sql.NVarChar(100), Name.trim())
-      .input("Description", sql.NVarChar(500), Description)
-      .query(`
-        UPDATE dbo.Categories
-        SET Name = @Name,
-            Description = @Description
-        WHERE CategoryID = @CategoryID;
+    const result = await pool.query(
+      `
+        UPDATE "Categories"
+        SET
+          "Name" = $1,
+          "Description" = $2
+        WHERE "CategoryID" = $3
+        RETURNING
+          "CategoryID",
+          "Name",
+          "Description",
+          "CreatedAt";
+      `,
+      [Name.trim(), Description, categoryID]
+    );
 
-        SELECT
-          CategoryID,
-          Name,
-          Description,
-          CreatedAt
-        FROM dbo.Categories
-        WHERE CategoryID = @CategoryID;
-      `);
-
-    if (result.recordset.length === 0) {
+    if (result.rows.length === 0) {
       return res.status(404).json({
         message: "Category not found."
       });
     }
 
-    res.json({
+    return res.json({
       message: "Category updated successfully.",
-      category: result.recordset[0]
+      category: result.rows[0]
     });
   } catch (error) {
-    if (error.number === 2627 || error.number === 2601) {
+    if (error.code === "23505") {
       return res.status(409).json({
         message: "A category with this name already exists."
       });
     }
 
     console.error("Error updating category:", error.message);
-    res.status(500).json({
+
+    return res.status(500).json({
       message: "Failed to update category."
     });
   }
 });
 
-// DELETE: Delete a category only if no products use it
-router.delete("/:id", async (req, res) => {
+// DELETE: Delete a category only if no products use it (admin only)
+router.delete("/:id", authenticateToken, requireAdmin, async (req, res) => {
+  const pool = await getPool();
+  const client = await pool.connect();
+
   try {
     const categoryID = Number(req.params.id);
 
@@ -167,63 +179,71 @@ router.delete("/:id", async (req, res) => {
       });
     }
 
-    const pool = await getPool();
+    await client.query("BEGIN");
 
-    const transaction = new sql.Transaction(pool);
-    await transaction.begin();
+    const categoryResult = await client.query(
+      `
+        SELECT "CategoryID"
+        FROM "Categories"
+        WHERE "CategoryID" = $1
+        FOR UPDATE;
+      `,
+      [categoryID]
+    );
 
-    try {
-      const request = new sql.Request(transaction);
+    if (categoryResult.rows.length === 0) {
+      await client.query("ROLLBACK");
 
-      const result = await request
-        .input("CategoryID", sql.Int, categoryID)
-        .query(`
-          SELECT CategoryID
-          FROM dbo.Categories WITH (UPDLOCK, HOLDLOCK)
-          WHERE CategoryID = @CategoryID;
-
-          SELECT TOP (1) ProductID
-          FROM dbo.Products WITH (UPDLOCK, HOLDLOCK)
-          WHERE CategoryID = @CategoryID;
-        `);
-
-      if (result.recordsets[0].length === 0) {
-        await transaction.rollback();
-
-        return res.status(404).json({
-          message: "Category not found."
-        });
-      }
-
-      if (result.recordsets[1].length > 0) {
-        await transaction.rollback();
-
-        return res.status(409).json({
-          message: "Cannot delete this category because products are using it."
-        });
-      }
-
-      await new sql.Request(transaction)
-        .input("CategoryID", sql.Int, categoryID)
-        .query(`
-          DELETE FROM dbo.Categories
-          WHERE CategoryID = @CategoryID;
-        `);
-
-      await transaction.commit();
-
-      res.json({
-        message: "Category deleted successfully."
+      return res.status(404).json({
+        message: "Category not found."
       });
-    } catch (error) {
-      await transaction.rollback();
-      throw error;
     }
+
+    const productsResult = await client.query(
+      `
+        SELECT "ProductID"
+        FROM "Products"
+        WHERE "CategoryID" = $1
+        LIMIT 1;
+      `,
+      [categoryID]
+    );
+
+    if (productsResult.rows.length > 0) {
+      await client.query("ROLLBACK");
+
+      return res.status(409).json({
+        message: "Cannot delete this category because products are using it."
+      });
+    }
+
+    await client.query(
+      `
+        DELETE FROM "Categories"
+        WHERE "CategoryID" = $1;
+      `,
+      [categoryID]
+    );
+
+    await client.query("COMMIT");
+
+    return res.json({
+      message: "Category deleted successfully."
+    });
   } catch (error) {
+    try {
+      await client.query("ROLLBACK");
+    } catch (rollbackError) {
+      console.error("Transaction rollback error:", rollbackError.message);
+    }
+
     console.error("Error deleting category:", error.message);
-    res.status(500).json({
+
+    return res.status(500).json({
       message: "Failed to delete category."
     });
+  } finally {
+    client.release();
   }
 });
 

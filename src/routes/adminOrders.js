@@ -1,6 +1,6 @@
 
 const express = require("express");
-const { getPool, sql } = require("../config/db");
+const { getPool } = require("../config/db");
 const {
   authenticateToken,
   requireAdmin
@@ -8,7 +8,7 @@ const {
 
 const router = express.Router();
 
-// Every endpoint in this router requires an authenticated admin.
+// Every endpoint requires an authenticated admin.
 router.use(authenticateToken, requireAdmin);
 
 // GET /api/admin/orders
@@ -17,36 +17,36 @@ router.get("/", async (req, res) => {
   try {
     const pool = await getPool();
 
-    const result = await pool.request().query(`
+    const result = await pool.query(`
       SELECT
-        o.OrderID,
-        o.UserID,
-        u.FullName AS CustomerName,
-        u.Email AS CustomerEmail,
-        o.AddressID,
-        o.TotalAmount,
-        o.OrderStatus,
-        o.CreatedAt,
-        COUNT(oi.OrderItemID) AS ItemCount
-      FROM dbo.Orders o
-      INNER JOIN dbo.Users u
-        ON u.UserID = o.UserID
-      LEFT JOIN dbo.OrderItems oi
-        ON oi.OrderID = o.OrderID
+        o."OrderID",
+        o."UserID",
+        u."FullName" AS "CustomerName",
+        u."Email" AS "CustomerEmail",
+        o."AddressID",
+        o."TotalAmount",
+        o."OrderStatus",
+        o."CreatedAt",
+        COUNT(oi."OrderItemID") AS "ItemCount"
+      FROM "Orders" o
+      INNER JOIN "Users" u
+        ON u."UserID" = o."UserID"
+      LEFT JOIN "OrderItems" oi
+        ON oi."OrderID" = o."OrderID"
       GROUP BY
-        o.OrderID,
-        o.UserID,
-        u.FullName,
-        u.Email,
-        o.AddressID,
-        o.TotalAmount,
-        o.OrderStatus,
-        o.CreatedAt
-      ORDER BY o.CreatedAt DESC;
+        o."OrderID",
+        o."UserID",
+        u."FullName",
+        u."Email",
+        o."AddressID",
+        o."TotalAmount",
+        o."OrderStatus",
+        o."CreatedAt"
+      ORDER BY o."CreatedAt" DESC;
     `);
 
     return res.json({
-      orders: result.recordset.map(order => ({
+      orders: result.rows.map(order => ({
         orderId: Number(order.OrderID),
         userId: Number(order.UserID),
         customerName: order.CustomerName,
@@ -58,8 +58,9 @@ router.get("/", async (req, res) => {
         itemCount: Number(order.ItemCount)
       }))
     });
+
   } catch (error) {
-    console.error("Admin get orders error:", error);
+    console.error("Admin get orders error:", error.message);
 
     return res.status(500).json({
       message: "Unable to retrieve orders."
@@ -67,8 +68,8 @@ router.get("/", async (req, res) => {
   }
 });
 
- // PATCH /api/admin/orders/:id/status
- // Update an order's status as an administrator.
+// PATCH /api/admin/orders/:id/status
+// Update an order's status as an administrator.
 router.patch("/:id/status", async (req, res) => {
   const orderId = Number(req.params.id);
   const { status } = req.body;
@@ -95,31 +96,37 @@ router.patch("/:id/status", async (req, res) => {
     });
   }
 
-  let transaction;
+  let client;
+  let transactionStarted = false;
 
   try {
     const pool = await getPool();
+    client = await pool.connect();
 
-    transaction = new sql.Transaction(pool);
-    await transaction.begin(sql.ISOLATION_LEVEL.SERIALIZABLE);
+    await client.query("BEGIN ISOLATION LEVEL SERIALIZABLE");
+    transactionStarted = true;
 
-    const orderResult = await new sql.Request(transaction)
-      .input("OrderID", sql.Int, orderId)
-      .query(`
-        SELECT OrderID, OrderStatus
-        FROM dbo.Orders WITH (UPDLOCK, HOLDLOCK)
-        WHERE OrderID = @OrderID;
-      `);
+    // Lock the order to prevent simultaneous status changes.
+    const orderResult = await client.query(
+      `
+        SELECT "OrderID", "OrderStatus"
+        FROM "Orders"
+        WHERE "OrderID" = $1
+        FOR UPDATE;
+      `,
+      [orderId]
+    );
 
-    if (orderResult.recordset.length === 0) {
-      await transaction.rollback();
+    if (orderResult.rows.length === 0) {
+      await client.query("ROLLBACK");
+      transactionStarted = false;
 
       return res.status(404).json({
         message: "Order not found."
       });
     }
 
-    const currentStatus = orderResult.recordset[0].OrderStatus;
+    const currentStatus = orderResult.rows[0].OrderStatus;
 
     const transitions = {
       pending: ["confirmed", "cancelled"],
@@ -130,37 +137,40 @@ router.patch("/:id/status", async (req, res) => {
     };
 
     if (!transitions[currentStatus]?.includes(status)) {
-      await transaction.rollback();
+      await client.query("ROLLBACK");
+      transactionStarted = false;
 
       return res.status(400).json({
         message: `Cannot change order status from ${currentStatus} to ${status}.`
       });
     }
 
-    // Restore inventory if the order is cancelled.
+    // Restore inventory only when cancelling an eligible order.
+    // The locked order and transition rules prevent restoring twice.
     if (status === "cancelled") {
-      await new sql.Request(transaction)
-        .input("OrderID", sql.Int, orderId)
-        .query(`
-          UPDATE p
-          SET p.Stock = p.Stock + oi.Quantity
-          FROM dbo.Products p
-          INNER JOIN dbo.OrderItems oi
-            ON oi.ProductID = p.ProductID
-          WHERE oi.OrderID = @OrderID;
-        `);
+      await client.query(
+        `
+          UPDATE "Products" AS p
+          SET "Stock" = p."Stock" + oi."Quantity"
+          FROM "OrderItems" AS oi
+          WHERE oi."ProductID" = p."ProductID"
+            AND oi."OrderID" = $1;
+        `,
+        [orderId]
+      );
     }
 
-    await new sql.Request(transaction)
-      .input("OrderID", sql.Int, orderId)
-      .input("Status", sql.NVarChar(20), status)
-      .query(`
-        UPDATE dbo.Orders
-        SET OrderStatus = @Status
-        WHERE OrderID = @OrderID;
-      `);
+    await client.query(
+      `
+        UPDATE "Orders"
+        SET "OrderStatus" = $1
+        WHERE "OrderID" = $2;
+      `,
+      [status, orderId]
+    );
 
-    await transaction.commit();
+    await client.query("COMMIT");
+    transactionStarted = false;
 
     return res.json({
       message: "Order status updated successfully.",
@@ -168,20 +178,26 @@ router.patch("/:id/status", async (req, res) => {
       previousStatus: currentStatus,
       status
     });
+
   } catch (error) {
-    if (transaction) {
+    if (client && transactionStarted) {
       try {
-        await transaction.rollback();
-      } catch (_) {
-        // The transaction may already have rolled back.
+        await client.query("ROLLBACK");
+      } catch (rollbackError) {
+        console.error("Admin order rollback error:", rollbackError.message);
       }
     }
 
-    console.error("Admin update order status error:", error);
+    console.error("Admin update order status error:", error.message);
 
     return res.status(500).json({
       message: "Unable to update order status."
     });
+
+  } finally {
+    if (client) {
+      client.release();
+    }
   }
 });
 

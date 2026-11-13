@@ -1,32 +1,23 @@
 
-const sql = require("mssql/msnodesqlv8");
+const { Pool } = require("pg");
+require("dotenv").config();
 
-const config = {
-  server: process.env.DB_SERVER || "localhost",
-  database: process.env.DB_NAME || "FomsiLighting",
- driver: "ODBC Driver 18 for SQL Server",
-  options: {
-    trustedConnection: true,
-    trustServerCertificate:
-      process.env.DB_TRUST_SERVER_CERTIFICATE === "true",
-  },
-  connectionTimeout: 15000,
-  requestTimeout: 15000,
-};
+const pool = new Pool({
+    connectionString: process.env.DATABASE_URL,
+    ssl: {
+        rejectUnauthorized: false
+    },
+    max: 10,
+    idleTimeoutMillis: 30000,
+    connectionTimeoutMillis: 10000
+});
 
-let poolPromise;
+pool.on("error", (err) => {
+    console.error("Unexpected PostgreSQL error:", err.message);
+});
 
 async function getPool() {
-  if (!poolPromise) {
-    poolPromise = new sql.ConnectionPool(config)
-      .connect()
-      .catch((error) => {
-        poolPromise = null;
-        throw error;
-      });
-  }
-
-  return poolPromise;
+    return pool;
 }
 
-module.exports = { sql, getPool };
+module.exports = { getPool };

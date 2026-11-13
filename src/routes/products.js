@@ -1,33 +1,37 @@
 
 const express = require("express");
 const router = express.Router();
-const { getPool, sql } = require("../config/db");
+
+const { getPool } = require("../config/db");
+
 const {
   authenticateToken,
   requireAdmin
 } = require("../middleware/auth");
+
 // GET: Retrieve all active products
 router.get("/", async (req, res) => {
   try {
     const pool = await getPool();
 
-    const result = await pool.request().query(`
+    const result = await pool.query(`
       SELECT
-        ProductID,
-        CategoryID,
-        Name,
-        Description,
-        Price,
-        Stock,
-        ImageURL,
-        IsActive,
-        CreatedAt
-      FROM dbo.Products
-      WHERE IsActive = 1
-      ORDER BY CreatedAt DESC;
+        "ProductID",
+        "CategoryID",
+        "Name",
+        "Description",
+        "Price",
+        "Stock",
+        "ImageURL",
+        "IsActive",
+        "CreatedAt"
+      FROM "Products"
+      WHERE "IsActive" = TRUE
+      ORDER BY "CreatedAt" DESC;
     `);
 
-    return res.json(result.recordset);
+    return res.json(result.rows);
+
   } catch (error) {
     console.error("Error fetching products:", error.message);
 
@@ -37,8 +41,9 @@ router.get("/", async (req, res) => {
   }
 });
 
-// POST: Create a new product
-router.post("/", authenticateToken, requireAdmin, async (req, res) => {  try {
+// POST: Create a new product (Admin only)
+router.post("/", authenticateToken, requireAdmin, async (req, res) => {
+  try {
     const {
       CategoryID,
       Name,
@@ -59,6 +64,7 @@ router.post("/", authenticateToken, requireAdmin, async (req, res) => {  try {
       Number(CategoryID) <= 0 ||
       typeof Name !== "string" ||
       !Name.trim() ||
+      Name.trim().length > 200 ||
       !Number.isFinite(Number(Price)) ||
       Number(Price) < 0 ||
       (Stock != null &&
@@ -73,52 +79,49 @@ router.post("/", authenticateToken, requireAdmin, async (req, res) => {  try {
 
     const pool = await getPool();
 
-    const result = await pool.request()
-      .input("CategoryID", sql.Int, Number(CategoryID))
-      .input("Name", sql.NVarChar(200), Name.trim())
-      .input("Description", sql.NVarChar(sql.MAX), Description ?? null)
-      .input("Price", sql.Decimal(12, 2), Number(Price))
-      .input("Stock", sql.Int, Stock == null ? 0 : Number(Stock))
-      .input("ImageURL", sql.NVarChar(1000), ImageURL ?? null)
-      .query(`
-        INSERT INTO dbo.Products (
-          CategoryID,
-          Name,
-          Description,
-          Price,
-          Stock,
-          ImageURL
+    const result = await pool.query(
+      `
+        INSERT INTO "Products" (
+          "CategoryID",
+          "Name",
+          "Description",
+          "Price",
+          "Stock",
+          "ImageURL"
         )
-        OUTPUT
-          INSERTED.ProductID,
-          INSERTED.CategoryID,
-          INSERTED.Name,
-          INSERTED.Description,
-          INSERTED.Price,
-          INSERTED.Stock,
-          INSERTED.ImageURL,
-          INSERTED.IsActive,
-          INSERTED.CreatedAt
-        VALUES (
-          @CategoryID,
-          @Name,
-          @Description,
-          @Price,
-          @Stock,
-          @ImageURL
-        );
-      `);
+        VALUES ($1, $2, $3, $4, $5, $6)
+        RETURNING
+          "ProductID",
+          "CategoryID",
+          "Name",
+          "Description",
+          "Price",
+          "Stock",
+          "ImageURL",
+          "IsActive",
+          "CreatedAt";
+      `,
+      [
+        Number(CategoryID),
+        Name.trim(),
+        Description ?? null,
+        Number(Price),
+        Stock == null ? 0 : Number(Stock),
+        ImageURL ?? null
+      ]
+    );
 
     return res.status(201).json({
       message: "Product created successfully.",
-      product: result.recordset[0]
+      product: result.rows[0]
     });
+
   } catch (error) {
     console.error("Error creating product:", error.message);
 
-    if (error.number === 547) {
+    if (error.code === "23503") {
       return res.status(400).json({
-        message: "The specified category does not exist, or a database constraint was violated."
+        message: "The specified category does not exist."
       });
     }
 
@@ -128,8 +131,9 @@ router.post("/", authenticateToken, requireAdmin, async (req, res) => {  try {
   }
 });
 
-// PUT: Update an existing product
-router.put("/:id", authenticateToken, requireAdmin, async (req, res) => {  try {
+// PUT: Update an existing product (Admin only)
+router.put("/:id", authenticateToken, requireAdmin, async (req, res) => {
+  try {
     const productId = Number(req.params.id);
 
     if (!Number.isInteger(productId) || productId <= 0) {
@@ -162,6 +166,7 @@ router.put("/:id", authenticateToken, requireAdmin, async (req, res) => {  try {
       Number(CategoryID) <= 0 ||
       typeof Name !== "string" ||
       !Name.trim() ||
+      Name.trim().length > 200 ||
       !Number.isFinite(Number(Price)) ||
       Number(Price) < 0 ||
       (Stock != null &&
@@ -176,42 +181,41 @@ router.put("/:id", authenticateToken, requireAdmin, async (req, res) => {  try {
 
     const pool = await getPool();
 
-    const result = await pool.request()
-      .input("ProductID", sql.Int, productId)
-      .input("CategoryID", sql.Int, Number(CategoryID))
-      .input("Name", sql.NVarChar(200), Name.trim())
-      .input("Description", sql.NVarChar(sql.MAX), Description ?? null)
-      .input("Price", sql.Decimal(12, 2), Number(Price))
-      .input("Stock", sql.Int, Stock == null ? 0 : Number(Stock))
-      .input("ImageURL", sql.NVarChar(1000), ImageURL ?? null)
-      .query(`
-        UPDATE dbo.Products
+    const result = await pool.query(
+      `
+        UPDATE "Products"
         SET
-          CategoryID = @CategoryID,
-          Name = @Name,
-          Description = @Description,
-          Price = @Price,
-          Stock = @Stock,
-          ImageURL = @ImageURL
-        WHERE ProductID = @ProductID
-          AND IsActive = 1;
+          "CategoryID" = $1,
+          "Name" = $2,
+          "Description" = $3,
+          "Price" = $4,
+          "Stock" = $5,
+          "ImageURL" = $6
+        WHERE "ProductID" = $7
+          AND "IsActive" = TRUE
+        RETURNING
+          "ProductID",
+          "CategoryID",
+          "Name",
+          "Description",
+          "Price",
+          "Stock",
+          "ImageURL",
+          "IsActive",
+          "CreatedAt";
+      `,
+      [
+        Number(CategoryID),
+        Name.trim(),
+        Description ?? null,
+        Number(Price),
+        Stock == null ? 0 : Number(Stock),
+        ImageURL ?? null,
+        productId
+      ]
+    );
 
-        SELECT
-          ProductID,
-          CategoryID,
-          Name,
-          Description,
-          Price,
-          Stock,
-          ImageURL,
-          IsActive,
-          CreatedAt
-        FROM dbo.Products
-        WHERE ProductID = @ProductID
-          AND IsActive = 1;
-      `);
-
-    if (result.recordset.length === 0) {
+    if (result.rows.length === 0) {
       return res.status(404).json({
         message: "Active product not found."
       });
@@ -219,14 +223,15 @@ router.put("/:id", authenticateToken, requireAdmin, async (req, res) => {  try {
 
     return res.json({
       message: "Product updated successfully.",
-      product: result.recordset[0]
+      product: result.rows[0]
     });
+
   } catch (error) {
     console.error("Error updating product:", error.message);
 
-    if (error.number === 547) {
+    if (error.code === "23503") {
       return res.status(400).json({
-        message: "The specified category does not exist, or a database constraint was violated."
+        message: "The specified category does not exist."
       });
     }
 
@@ -236,8 +241,9 @@ router.put("/:id", authenticateToken, requireAdmin, async (req, res) => {  try {
   }
 });
 
- // DELETE: Soft-delete a product
-router.delete("/:id", authenticateToken, requireAdmin, async (req, res) => {  try {
+// DELETE: Soft-delete a product (Admin only)
+router.delete("/:id", authenticateToken, requireAdmin, async (req, res) => {
+  try {
     const productId = Number(req.params.id);
 
     if (!Number.isInteger(productId) || productId <= 0) {
@@ -248,18 +254,17 @@ router.delete("/:id", authenticateToken, requireAdmin, async (req, res) => {  tr
 
     const pool = await getPool();
 
-    const result = await pool.request()
-      .input("ProductID", sql.Int, productId)
-      .query(`
-        UPDATE dbo.Products
-        SET IsActive = 0
-        WHERE ProductID = @ProductID
-          AND IsActive = 1;
+    const result = await pool.query(
+      `
+        UPDATE "Products"
+        SET "IsActive" = FALSE
+        WHERE "ProductID" = $1
+          AND "IsActive" = TRUE;
+      `,
+      [productId]
+    );
 
-        SELECT @@ROWCOUNT AS RowsAffected;
-      `);
-
-    if (result.recordsets[0][0].RowsAffected === 0) {
+    if (result.rowCount === 0) {
       return res.status(404).json({
         message: "Active product not found."
       });
@@ -268,6 +273,7 @@ router.delete("/:id", authenticateToken, requireAdmin, async (req, res) => {  tr
     return res.json({
       message: "Product deactivated successfully."
     });
+
   } catch (error) {
     console.error("Error deleting product:", error.message);
 

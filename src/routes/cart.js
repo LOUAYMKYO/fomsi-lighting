@@ -1,6 +1,6 @@
 
 const express = require("express");
-const { getPool, sql } = require("../config/db");
+const { getPool } = require("../config/db");
 const { authenticateToken } = require("../middleware/auth");
 
 const router = express.Router();
@@ -9,23 +9,29 @@ router.use(authenticateToken);
 
 // Get the current user's cart, creating it if necessary
 async function getOrCreateCart(pool, userId) {
-  const result = await pool
-    .request()
-    .input("UserID", sql.Int, userId)
-    .query(`
-      IF NOT EXISTS (
-        SELECT 1 FROM dbo.Carts WHERE UserID = @UserID
-      )
-      BEGIN
-        INSERT INTO dbo.Carts (UserID) VALUES (@UserID);
-      END;
+  await pool.query(
+    `
+      INSERT INTO "Carts" ("UserID")
+      VALUES ($1)
+      ON CONFLICT ("UserID") DO NOTHING;
+    `,
+    [userId]
+  );
 
-      SELECT CartID
-      FROM dbo.Carts
-      WHERE UserID = @UserID;
-    `);
+  const result = await pool.query(
+    `
+      SELECT "CartID"
+      FROM "Carts"
+      WHERE "UserID" = $1;
+    `,
+    [userId]
+  );
 
-  return result.recordset[0].CartID;
+  if (result.rows.length === 0) {
+    throw new Error("Unable to create or retrieve cart.");
+  }
+
+  return result.rows[0].CartID;
 }
 
 // GET /api/cart
@@ -34,42 +40,48 @@ router.get("/", async (req, res) => {
     const pool = await getPool();
     const cartId = await getOrCreateCart(pool, req.user.userId);
 
-    const result = await pool
-      .request()
-      .input("CartID", sql.Int, cartId)
-      .query(`
+    const result = await pool.query(
+      `
         SELECT
-          ci.CartItemID,
-          ci.ProductID,
-          p.Name,
-          p.Description,
-          p.Price,
-          ci.Quantity,
-          p.Stock,
-          p.ImageURL,
-          CAST(p.Price * ci.Quantity AS DECIMAL(12, 2)) AS LineTotal
-        FROM dbo.CartItems ci
-        INNER JOIN dbo.Products p
-          ON p.ProductID = ci.ProductID
-        WHERE ci.CartID = @CartID
-          AND p.IsActive = 1
-        ORDER BY ci.CartItemID DESC;
-      `);
+          ci."CartItemID",
+          ci."ProductID",
+          p."Name",
+          p."Description",
+          p."Price",
+          ci."Quantity",
+          p."Stock",
+          p."ImageURL",
+          (p."Price" * ci."Quantity")::NUMERIC(12, 2) AS "LineTotal"
+        FROM "CartItems" ci
+        INNER JOIN "Products" p
+          ON p."ProductID" = ci."ProductID"
+        WHERE ci."CartID" = $1
+          AND p."IsActive" = TRUE
+        ORDER BY ci."CartItemID" DESC;
+      `,
+      [cartId]
+    );
 
-    const items = result.recordset;
+    const items = result.rows;
+
     const total = items.reduce(
       (sum, item) => sum + Number(item.LineTotal),
       0
     );
 
-    res.json({
+    return res.json({
       items,
-      itemCount: items.reduce((sum, item) => sum + item.Quantity, 0),
+      itemCount: items.reduce(
+        (sum, item) => sum + item.Quantity,
+        0
+      ),
       total: Number(total.toFixed(2))
     });
+
   } catch (error) {
-    console.error("Get cart error:", error);
-    res.status(500).json({
+    console.error("Get cart error:", error.message);
+
+    return res.status(500).json({
       message: "Unable to retrieve cart."
     });
   }
@@ -77,8 +89,12 @@ router.get("/", async (req, res) => {
 
 // POST /api/cart/items
 router.post("/items", async (req, res) => {
+  const pool = await getPool();
+  const client = await pool.connect();
+
   try {
     const productId = Number(req.body.productId);
+
     const quantity = req.body.quantity === undefined
       ? 1
       : req.body.quantity;
@@ -94,94 +110,123 @@ router.post("/items", async (req, res) => {
       });
     }
 
-    const pool = await getPool();
+    await client.query("BEGIN");
 
-    const productResult = await pool
-      .request()
-      .input("ProductID", sql.Int, productId)
-      .query(`
-        SELECT ProductID, Name, Price, Stock
-        FROM dbo.Products
-        WHERE ProductID = @ProductID
-          AND IsActive = 1;
-      `);
+    // Lock the product while checking and updating its cart quantity.
+    const productResult = await client.query(
+      `
+        SELECT
+          "ProductID",
+          "Name",
+          "Price",
+          "Stock"
+        FROM "Products"
+        WHERE "ProductID" = $1
+          AND "IsActive" = TRUE
+        FOR UPDATE;
+      `,
+      [productId]
+    );
 
-    if (productResult.recordset.length === 0) {
+    if (productResult.rows.length === 0) {
+      await client.query("ROLLBACK");
+
       return res.status(404).json({
         message: "Product not found or unavailable."
       });
     }
 
-    const product = productResult.recordset[0];
-    const cartId = await getOrCreateCart(pool, req.user.userId);
+    const product = productResult.rows[0];
 
-    // Add to an existing row, or create a new row.
-    // Lock the cart-item key to avoid concurrent duplicate rows.
-    const result = await pool
-      .request()
-      .input("CartID", sql.Int, cartId)
-      .input("ProductID", sql.Int, productId)
-      .input("Quantity", sql.Int, quantity)
-      .input("Stock", sql.Int, product.Stock)
-      .query(`
-        SET XACT_ABORT ON;
-        BEGIN TRANSACTION;
+    const cartId = await getOrCreateCart(
+      client,
+      req.user.userId
+    );
 
-        DECLARE @ExistingQuantity INT;
+    const existingResult = await client.query(
+      `
+        SELECT "CartItemID", "Quantity"
+        FROM "CartItems"
+        WHERE "CartID" = $1
+          AND "ProductID" = $2
+        FOR UPDATE;
+      `,
+      [cartId, productId]
+    );
 
-        SELECT @ExistingQuantity = Quantity
-        FROM dbo.CartItems WITH (UPDLOCK, HOLDLOCK)
-        WHERE CartID = @CartID
-          AND ProductID = @ProductID;
+    const existingItem = existingResult.rows[0];
 
-        IF ISNULL(@ExistingQuantity, 0) + @Quantity > @Stock
-        BEGIN
-          ROLLBACK TRANSACTION;
-          SELECT CAST(0 AS BIT) AS Success;
-        END
-        ELSE
-        BEGIN
-          IF @ExistingQuantity IS NULL
-          BEGIN
-            INSERT INTO dbo.CartItems (CartID, ProductID, Quantity)
-            VALUES (@CartID, @ProductID, @Quantity);
-          END
-          ELSE
-          BEGIN
-            UPDATE dbo.CartItems
-            SET Quantity = @ExistingQuantity + @Quantity
-            WHERE CartID = @CartID
-              AND ProductID = @ProductID;
-          END;
+    const currentQuantity = existingItem
+      ? existingItem.Quantity
+      : 0;
 
-          COMMIT TRANSACTION;
-          SELECT CAST(1 AS BIT) AS Success;
-        END;
-      `);
+    if (currentQuantity + quantity > product.Stock) {
+      await client.query("ROLLBACK");
 
-    if (!result.recordset[0].Success) {
       return res.status(400).json({
         message: "Requested quantity exceeds available stock.",
         availableStock: product.Stock
       });
     }
 
-    res.status(201).json({
+    if (existingItem) {
+      await client.query(
+        `
+          UPDATE "CartItems"
+          SET "Quantity" = $1
+          WHERE "CartItemID" = $2;
+        `,
+        [
+          currentQuantity + quantity,
+          existingItem.CartItemID
+        ]
+      );
+    } else {
+      await client.query(
+        `
+          INSERT INTO "CartItems" (
+            "CartID",
+            "ProductID",
+            "Quantity"
+          )
+          VALUES ($1, $2, $3);
+        `,
+        [cartId, productId, quantity]
+      );
+    }
+
+    await client.query("COMMIT");
+
+    return res.status(201).json({
       message: "Product added to cart.",
       productId,
       quantityAdded: quantity
     });
+
   } catch (error) {
-    console.error("Add cart item error:", error);
-    res.status(500).json({
+    try {
+      await client.query("ROLLBACK");
+    } catch (rollbackError) {
+      console.error("Cart rollback error:", rollbackError.message);
+    }
+
+    console.error("Add cart item error:", error.message);
+
+    return res.status(500).json({
       message: "Unable to add product to cart."
     });
+
+  } finally {
+    client.release();
   }
 });
 
 // PUT /api/cart/items/:productId
 // Set the item's quantity to the supplied quantity.
 router.put("/items/:productId", async (req, res) => {
+  const pool = await getPool();
+  const client = await pool.connect();
+
   try {
     const productId = Number(req.params.productId);
     const { quantity } = req.body;
@@ -197,42 +242,75 @@ router.put("/items/:productId", async (req, res) => {
       });
     }
 
-    const pool = await getPool();
-    const cartId = await getOrCreateCart(pool, req.user.userId);
+    await client.query("BEGIN");
 
-    const result = await pool
-      .request()
-      .input("CartID", sql.Int, cartId)
-      .input("ProductID", sql.Int, productId)
-      .input("Quantity", sql.Int, quantity)
-      .query(`
-        UPDATE ci
-        SET Quantity = @Quantity
-        FROM dbo.CartItems ci
-        INNER JOIN dbo.Products p
-          ON p.ProductID = ci.ProductID
-        WHERE ci.CartID = @CartID
-          AND ci.ProductID = @ProductID
-          AND p.IsActive = 1
-          AND p.Stock >= @Quantity;
+    const productResult = await client.query(
+      `
+        SELECT "Stock"
+        FROM "Products"
+        WHERE "ProductID" = $1
+          AND "IsActive" = TRUE
+        FOR UPDATE;
+      `,
+      [productId]
+    );
 
-        SELECT @@ROWCOUNT AS RowsAffected;
-      `);
+    if (
+      productResult.rows.length === 0 ||
+      productResult.rows[0].Stock < quantity
+    ) {
+      await client.query("ROLLBACK");
 
-    if (result.recordset[0].RowsAffected === 0) {
       return res.status(400).json({
-        message: "Cart item not found, product unavailable, or quantity exceeds stock."
+        message: "Product unavailable or quantity exceeds stock."
       });
     }
 
-    res.json({
+    const cartId = await getOrCreateCart(
+      client,
+      req.user.userId
+    );
+
+    const result = await client.query(
+      `
+        UPDATE "CartItems"
+        SET "Quantity" = $1
+        WHERE "CartID" = $2
+          AND "ProductID" = $3
+        RETURNING "CartItemID";
+      `,
+      [quantity, cartId, productId]
+    );
+
+    if (result.rows.length === 0) {
+      await client.query("ROLLBACK");
+
+      return res.status(404).json({
+        message: "Product not found in cart."
+      });
+    }
+
+    await client.query("COMMIT");
+
+    return res.json({
       message: "Cart quantity updated successfully."
     });
+
   } catch (error) {
-    console.error("Update cart item error:", error);
-    res.status(500).json({
+    try {
+      await client.query("ROLLBACK");
+    } catch (rollbackError) {
+      console.error("Cart rollback error:", rollbackError.message);
+    }
+
+    console.error("Update cart item error:", error.message);
+
+    return res.status(500).json({
       message: "Unable to update cart item."
     });
+
+  } finally {
+    client.release();
   }
 });
 
@@ -250,29 +328,30 @@ router.delete("/items/:productId", async (req, res) => {
     const pool = await getPool();
     const cartId = await getOrCreateCart(pool, req.user.userId);
 
-    const result = await pool
-      .request()
-      .input("CartID", sql.Int, cartId)
-      .input("ProductID", sql.Int, productId)
-      .query(`
-        DELETE FROM dbo.CartItems
-        OUTPUT DELETED.CartItemID
-        WHERE CartID = @CartID
-          AND ProductID = @ProductID;
-      `);
+    const result = await pool.query(
+      `
+        DELETE FROM "CartItems"
+        WHERE "CartID" = $1
+          AND "ProductID" = $2
+        RETURNING "CartItemID";
+      `,
+      [cartId, productId]
+    );
 
-    if (result.recordset.length === 0) {
+    if (result.rows.length === 0) {
       return res.status(404).json({
         message: "Product not found in cart."
       });
     }
 
-    res.json({
+    return res.json({
       message: "Product removed from cart."
     });
+
   } catch (error) {
-    console.error("Delete cart item error:", error);
-    res.status(500).json({
+    console.error("Delete cart item error:", error.message);
+
+    return res.status(500).json({
       message: "Unable to remove product from cart."
     });
   }

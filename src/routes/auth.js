@@ -2,7 +2,7 @@
 const express = require("express");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
-const { getPool, sql } = require("../config/db");
+const { getPool } = require("../config/db");
 
 const router = express.Router();
 
@@ -11,7 +11,7 @@ router.post("/register", async (req, res) => {
   try {
     const { fullName, email, password } = req.body;
 
-    // Validate the input
+    // Validate input
     if (
       typeof fullName !== "string" ||
       typeof email !== "string" ||
@@ -51,6 +51,7 @@ router.post("/register", async (req, res) => {
 
     if (!process.env.JWT_SECRET) {
       console.error("JWT_SECRET is missing from the environment.");
+
       return res.status(500).json({
         message: "Server configuration error."
       });
@@ -58,42 +59,33 @@ router.post("/register", async (req, res) => {
 
     const pool = await getPool();
 
-    // Check whether this email is already registered
-    const existingUser = await pool
-      .request()
-      .input("Email", sql.NVarChar(254), cleanEmail)
-      .query(`
-        SELECT UserID
-        FROM dbo.Users
-        WHERE Email = @Email
-      `);
-
-    if (existingUser.recordset.length > 0) {
-      return res.status(409).json({
-        message: "An account with this email already exists."
-      });
-    }
-
-    // Never store the plain-text password
+    // Hash password before saving
     const passwordHash = await bcrypt.hash(password, 12);
 
     // Public registration always creates a customer
-    const result = await pool
-      .request()
-      .input("FullName", sql.NVarChar(150), cleanName)
-      .input("Email", sql.NVarChar(254), cleanEmail)
-      .input("PasswordHash", sql.NVarChar(255), passwordHash)
-      .query(`
-        INSERT INTO dbo.Users (FullName, Email, PasswordHash, Role)
-        OUTPUT
-          INSERTED.UserID,
-          INSERTED.FullName,
-          INSERTED.Email,
-          INSERTED.Role
-        VALUES (@FullName, @Email, @PasswordHash, 'customer')
-      `);
+    const result = await pool.query(
+      `
+        INSERT INTO "Users" (
+          "FullName",
+          "Email",
+          "PasswordHash",
+          "Role"
+        )
+        VALUES ($1, $2, $3, 'customer')
+        RETURNING
+          "UserID",
+          "FullName",
+          "Email",
+          "Role";
+      `,
+      [
+        cleanName,
+        cleanEmail,
+        passwordHash
+      ]
+    );
 
-    const user = result.recordset[0];
+    const user = result.rows[0];
 
     const token = jwt.sign(
       {
@@ -109,15 +101,16 @@ router.post("/register", async (req, res) => {
       token,
       user
     });
+
   } catch (error) {
-    // Handle a duplicate email if two requests arrive simultaneously
-    if (error.number === 2627 || error.number === 2601) {
+    // PostgreSQL unique violation (duplicate email)
+    if (error.code === "23505") {
       return res.status(409).json({
         message: "An account with this email already exists."
       });
     }
 
-    console.error("Registration error:", error);
+    console.error("Registration error:", error.message);
 
     return res.status(500).json({
       message: "Unable to register at this time."
@@ -144,6 +137,7 @@ router.post("/login", async (req, res) => {
 
     if (!process.env.JWT_SECRET) {
       console.error("JWT_SECRET is missing from the environment.");
+
       return res.status(500).json({
         message: "Server configuration error."
       });
@@ -152,19 +146,24 @@ router.post("/login", async (req, res) => {
     const cleanEmail = email.trim().toLowerCase();
     const pool = await getPool();
 
-    const result = await pool
-      .request()
-      .input("Email", sql.NVarChar(254), cleanEmail)
-      .query(`
-        SELECT UserID, FullName, Email, PasswordHash, Role
-        FROM dbo.Users
-        WHERE Email = @Email
-          AND IsActive = 1
-      `);
+    const result = await pool.query(
+      `
+        SELECT
+          "UserID",
+          "FullName",
+          "Email",
+          "PasswordHash",
+          "Role"
+        FROM "Users"
+        WHERE "Email" = $1
+          AND "IsActive" = TRUE;
+      `,
+      [cleanEmail]
+    );
 
-    const user = result.recordset[0];
+    const user = result.rows[0];
 
-    // Use the same message for an unknown email or incorrect password
+    // Same message for unknown email or incorrect password
     if (!user) {
       return res.status(401).json({
         message: "Invalid email or password."
@@ -201,8 +200,9 @@ router.post("/login", async (req, res) => {
         Role: user.Role
       }
     });
+
   } catch (error) {
-    console.error("Login error:", error);
+    console.error("Login error:", error.message);
 
     return res.status(500).json({
       message: "Unable to log in at this time."

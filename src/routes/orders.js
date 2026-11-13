@@ -1,6 +1,6 @@
 
 const express = require("express");
-const { getPool, sql } = require("../config/db");
+const { getPool } = require("../config/db");
 const { authenticateToken } = require("../middleware/auth");
 
 const router = express.Router();
@@ -18,88 +18,105 @@ router.post("/", async (req, res) => {
     });
   }
 
-  let transaction;
+  let client;
+  let transactionStarted = false;
 
   try {
     const pool = await getPool();
+    client = await pool.connect();
 
-    transaction = new sql.Transaction(pool);
-    await transaction.begin(sql.ISOLATION_LEVEL.SERIALIZABLE);
-
-    const request = new sql.Request(transaction);
+    await client.query("BEGIN ISOLATION LEVEL SERIALIZABLE");
+    transactionStarted = true;
 
     // Confirm that this address belongs to the logged-in customer.
-    const addressResult = await request
-      .input("UserID", sql.Int, req.user.userId)
-      .input("AddressID", sql.Int, addressId)
-      .query(`
-        SELECT AddressID
-        FROM dbo.Addresses
-        WHERE AddressID = @AddressID
-          AND UserID = @UserID;
-      `);
+    const addressResult = await client.query(
+      `
+        SELECT "AddressID"
+        FROM "Addresses"
+        WHERE "AddressID" = $1
+          AND "UserID" = $2
+        FOR SHARE;
+      `,
+      [addressId, req.user.userId]
+    );
 
-    if (addressResult.recordset.length === 0) {
-      await transaction.rollback();
+    if (addressResult.rows.length === 0) {
+      await client.query("ROLLBACK");
+      transactionStarted = false;
+
       return res.status(404).json({
         message: "Delivery address not found."
       });
     }
 
-    // Find the customer's cart.
-    const cartResult = await new sql.Request(transaction)
-      .input("UserID", sql.Int, req.user.userId)
-      .query(`
-        SELECT CartID
-        FROM dbo.Carts
-        WHERE UserID = @UserID;
-      `);
+    // Find and lock the customer's cart.
+    const cartResult = await client.query(
+      `
+        SELECT "CartID"
+        FROM "Carts"
+        WHERE "UserID" = $1
+        FOR UPDATE;
+      `,
+      [req.user.userId]
+    );
 
-    if (cartResult.recordset.length === 0) {
-      await transaction.rollback();
+    if (cartResult.rows.length === 0) {
+      await client.query("ROLLBACK");
+      transactionStarted = false;
+
       return res.status(400).json({
         message: "Your cart is empty."
       });
     }
 
-    const cartId = cartResult.recordset[0].CartID;
+    const cartId = cartResult.rows[0].CartID;
 
     // Lock cart items and products while creating the order.
-    const itemsResult = await new sql.Request(transaction)
-      .input("CartID", sql.Int, cartId)
-      .query(`
+    const itemsResult = await client.query(
+      `
         SELECT
-          ci.ProductID,
-          ci.Quantity,
-          p.Name,
-          p.Price,
-          p.Stock,
-          p.IsActive
-        FROM dbo.CartItems ci WITH (UPDLOCK, HOLDLOCK)
-        INNER JOIN dbo.Products p WITH (UPDLOCK, HOLDLOCK)
-          ON p.ProductID = ci.ProductID
-        WHERE ci.CartID = @CartID;
-      `);
+          ci."ProductID",
+          ci."Quantity",
+          p."Name",
+          p."Price",
+          p."Stock",
+          p."IsActive"
+        FROM "CartItems" ci
+        INNER JOIN "Products" p
+          ON p."ProductID" = ci."ProductID"
+        WHERE ci."CartID" = $1
+        ORDER BY p."ProductID"
+        FOR UPDATE OF ci, p;
+      `,
+      [cartId]
+    );
 
-    const items = itemsResult.recordset;
+    const items = itemsResult.rows;
 
     if (items.length === 0) {
-      await transaction.rollback();
+      await client.query("ROLLBACK");
+      transactionStarted = false;
+
       return res.status(400).json({
         message: "Your cart is empty."
       });
     }
 
+    // Validate product availability and stock.
     for (const item of items) {
       if (!item.IsActive) {
-        await transaction.rollback();
+        await client.query("ROLLBACK");
+        transactionStarted = false;
+
         return res.status(400).json({
           message: `Product "${item.Name}" is no longer available.`
         });
       }
 
       if (item.Quantity > item.Stock) {
-        await transaction.rollback();
+        await client.query("ROLLBACK");
+        transactionStarted = false;
+
         return res.status(400).json({
           message: `Insufficient stock for "${item.Name}".`,
           availableStock: item.Stock
@@ -113,115 +130,143 @@ router.post("/", async (req, res) => {
     );
 
     // Create the order header.
-    const orderResult = await new sql.Request(transaction)
-      .input("UserID", sql.Int, req.user.userId)
-      .input("AddressID", sql.Int, addressId)
-      .input("TotalAmount", sql.Decimal(12, 2), totalAmount)
-      .query(`
-        INSERT INTO dbo.Orders
-          (UserID, AddressID, TotalAmount)
-        OUTPUT INSERTED.OrderID
-        VALUES
-          (@UserID, @AddressID, @TotalAmount);
-      `);
+    const orderResult = await client.query(
+      `
+        INSERT INTO "Orders" (
+          "UserID",
+          "AddressID",
+          "TotalAmount"
+        )
+        VALUES ($1, $2, $3)
+        RETURNING "OrderID";
+      `,
+      [req.user.userId, addressId, totalAmount]
+    );
 
-    const orderId = orderResult.recordset[0].OrderID;
+    const orderId = orderResult.rows[0].OrderID;
 
     // Save purchase prices and deduct stock.
     for (const item of items) {
-      const itemResult = await new sql.Request(transaction)
-        .input("OrderID", sql.Int, orderId)
-        .input("ProductID", sql.Int, item.ProductID)
-        .input("Quantity", sql.Int, item.Quantity)
-        .input("UnitPrice", sql.Decimal(12, 2), item.Price)
-        .input("Name", sql.NVarChar(150), item.Name)
-        .query(`
-          INSERT INTO dbo.OrderItems
-            (OrderID, ProductID, Quantity, UnitPrice)
-          VALUES
-            (@OrderID, @ProductID, @Quantity, @UnitPrice);
+      await client.query(
+        `
+          INSERT INTO "OrderItems" (
+            "OrderID",
+            "ProductID",
+            "Quantity",
+            "UnitPrice"
+          )
+          VALUES ($1, $2, $3, $4);
+        `,
+        [
+          orderId,
+          item.ProductID,
+          item.Quantity,
+          item.Price
+        ]
+      );
 
-          UPDATE dbo.Products
-          SET Stock = Stock - @Quantity
-          WHERE ProductID = @ProductID
-            AND IsActive = 1
-            AND Stock >= @Quantity;
+      const stockResult = await client.query(
+        `
+          UPDATE "Products"
+          SET "Stock" = "Stock" - $1
+          WHERE "ProductID" = $2
+            AND "IsActive" = TRUE
+            AND "Stock" >= $1
+          RETURNING "ProductID";
+        `,
+        [item.Quantity, item.ProductID]
+      );
 
-          IF @@ROWCOUNT = 0
-            THROW 50001, 'Product stock changed or product is unavailable.', 1;
-        `);
+      if (stockResult.rows.length === 0) {
+        throw new Error(
+          "Product stock changed or product is unavailable."
+        );
+      }
     }
 
     // Clear the cart only after every order item succeeds.
-    await new sql.Request(transaction)
-      .input("CartID", sql.Int, cartId)
-      .query(`
-        DELETE FROM dbo.CartItems
-        WHERE CartID = @CartID;
-      `);
+    await client.query(
+      `
+        DELETE FROM "CartItems"
+        WHERE "CartID" = $1;
+      `,
+      [cartId]
+    );
 
-    await transaction.commit();
+    await client.query("COMMIT");
+    transactionStarted = false;
 
     return res.status(201).json({
       message: "Order created successfully.",
       orderId,
       totalAmount: Number(totalAmount.toFixed(2)),
       status: "pending",
-      itemCount: items.reduce((sum, item) => sum + item.Quantity, 0)
+      itemCount: items.reduce(
+        (sum, item) => sum + item.Quantity,
+        0
+      )
     });
+
   } catch (error) {
-    if (transaction && transaction._aborted !== true) {
+    if (client && transactionStarted) {
       try {
-        await transaction.rollback();
+        await client.query("ROLLBACK");
       } catch (rollbackError) {
         console.error("Order rollback error:", rollbackError.message);
       }
     }
 
-    console.error("Create order error:", error);
+    console.error("Create order error:", error.message);
 
     return res.status(500).json({
       message: "Unable to create order."
     });
+
+  } finally {
+    if (client) {
+      client.release();
+    }
   }
 });
 
- // GET /api/orders
- // Return only the logged-in customer's orders.
+// GET /api/orders
+// Return only the logged-in customer's orders.
 router.get("/", async (req, res) => {
   try {
     const pool = await getPool();
 
-    const result = await pool
-      .request()
-      .input("UserID", sql.Int, req.user.userId)
-      .query(`
+    const result = await pool.query(
+      `
         SELECT
-          o.OrderID,
-          o.AddressID,
-          o.TotalAmount,
-          o.OrderStatus,
-          o.CreatedAt,
-          oi.OrderItemID,
-          oi.ProductID,
-          p.Name AS ProductName,
-          oi.Quantity,
-          oi.UnitPrice,
-          CAST(
-            oi.Quantity * oi.UnitPrice AS DECIMAL(12, 2)
-          ) AS LineTotal
-        FROM dbo.Orders o
-        LEFT JOIN dbo.OrderItems oi
-          ON oi.OrderID = o.OrderID
-        LEFT JOIN dbo.Products p
-          ON p.ProductID = oi.ProductID
-        WHERE o.UserID = @UserID
-        ORDER BY o.CreatedAt DESC, oi.OrderItemID ASC;
-      `);
+          o."OrderID",
+          o."AddressID",
+          o."TotalAmount",
+          o."OrderStatus",
+          o."CreatedAt",
+          oi."OrderItemID",
+          oi."ProductID",
+          p."Name" AS "ProductName",
+          oi."Quantity",
+          oi."UnitPrice",
+          (
+            oi."Quantity" * oi."UnitPrice"
+          )::NUMERIC(12, 2) AS "LineTotal"
+        FROM "Orders" o
+        LEFT JOIN "OrderItems" oi
+          ON oi."OrderID" = o."OrderID"
+        LEFT JOIN "Products" p
+          ON p."ProductID" = oi."ProductID"
+        WHERE o."UserID" = $1
+        ORDER BY
+          o."CreatedAt" DESC,
+          oi."OrderItemID" ASC;
+      `,
+      [req.user.userId]
+    );
 
     const ordersMap = new Map();
 
-    for (const row of result.recordset) {
+    for (const row of result.rows) {
       if (!ordersMap.has(row.OrderID)) {
         ordersMap.set(row.OrderID, {
           orderId: row.OrderID,
@@ -248,8 +293,9 @@ router.get("/", async (req, res) => {
     return res.json({
       orders: Array.from(ordersMap.values())
     });
+
   } catch (error) {
-    console.error("Get order history error:", error);
+    console.error("Get order history error:", error.message);
 
     return res.status(500).json({
       message: "Unable to retrieve order history."
@@ -257,8 +303,8 @@ router.get("/", async (req, res) => {
   }
 });
 
- // GET /api/orders/:id
- // View one order belonging to the logged-in customer.
+// GET /api/orders/:id
+// View one order belonging to the logged-in customer.
 router.get("/:id", async (req, res) => {
   try {
     const orderId = Number(req.params.id);
@@ -271,56 +317,56 @@ router.get("/:id", async (req, res) => {
 
     const pool = await getPool();
 
-    const result = await pool
-      .request()
-      .input("OrderID", sql.Int, orderId)
-      .input("UserID", sql.Int, req.user.userId)
-      .query(`
+    const result = await pool.query(
+      `
         SELECT
-          o.OrderID,
-          o.UserID,
-          o.AddressID,
-          o.TotalAmount,
-          o.OrderStatus,
-          o.CreatedAt,
-          a.AddressLine,
-          a.City,
-          a.Wilaya,
-          a.PostalCode,
-          a.Phone,
-          oi.OrderItemID,
-          oi.ProductID,
-          p.Name AS ProductName,
-          oi.Quantity,
-          oi.UnitPrice,
-          CAST(
-            oi.Quantity * oi.UnitPrice AS DECIMAL(12, 2)
-          ) AS LineTotal
-        FROM dbo.Orders o
-        INNER JOIN dbo.Addresses a
-          ON a.AddressID = o.AddressID
-        LEFT JOIN dbo.OrderItems oi
-          ON oi.OrderID = o.OrderID
-        LEFT JOIN dbo.Products p
-          ON p.ProductID = oi.ProductID
-        WHERE o.OrderID = @OrderID
-          AND o.UserID = @UserID
-        ORDER BY oi.OrderItemID;
-      `);
+          o."OrderID",
+          o."UserID",
+          o."AddressID",
+          o."TotalAmount",
+          o."OrderStatus",
+          o."CreatedAt",
+          a."AddressLine",
+          a."City",
+          a."Wilaya",
+          a."PostalCode",
+          a."Phone",
+          oi."OrderItemID",
+          oi."ProductID",
+          p."Name" AS "ProductName",
+          oi."Quantity",
+          oi."UnitPrice",
+          (
+            oi."Quantity" * oi."UnitPrice"
+          )::NUMERIC(12, 2) AS "LineTotal"
+        FROM "Orders" o
+        INNER JOIN "Addresses" a
+          ON a."AddressID" = o."AddressID"
+        LEFT JOIN "OrderItems" oi
+          ON oi."OrderID" = o."OrderID"
+        LEFT JOIN "Products" p
+          ON p."ProductID" = oi."ProductID"
+        WHERE o."OrderID" = $1
+          AND o."UserID" = $2
+        ORDER BY oi."OrderItemID";
+      `,
+      [orderId, req.user.userId]
+    );
 
-    if (result.recordset.length === 0) {
+    if (result.rows.length === 0) {
       return res.status(404).json({
         message: "Order not found."
       });
     }
 
-    const first = result.recordset[0];
+    const first = result.rows[0];
 
     const order = {
       orderId: Number(first.OrderID),
       totalAmount: Number(first.TotalAmount),
       status: first.OrderStatus,
       createdAt: first.CreatedAt,
+
       deliveryAddress: {
         addressId: Number(first.AddressID),
         addressLine: first.AddressLine,
@@ -329,7 +375,8 @@ router.get("/:id", async (req, res) => {
         postalCode: first.PostalCode,
         phone: first.Phone
       },
-      items: result.recordset
+
+      items: result.rows
         .filter(row => row.OrderItemID !== null)
         .map(row => ({
           orderItemId: Number(row.OrderItemID),
@@ -342,8 +389,9 @@ router.get("/:id", async (req, res) => {
     };
 
     return res.json({ order });
+
   } catch (error) {
-    console.error("Get order details error:", error);
+    console.error("Get order details error:", error.message);
 
     return res.status(500).json({
       message: "Unable to retrieve order details."
@@ -351,11 +399,10 @@ router.get("/:id", async (req, res) => {
   }
 });
 
- // POST /api/orders/:id/cancel
- // Allow customers to cancel their own pending orders.
+// POST /api/orders/:id/cancel
+// Allow customers to cancel their own pending orders.
 router.post("/:id/cancel", async (req, res) => {
   const orderId = Number(req.params.id);
-  let transaction;
 
   if (!Number.isSafeInteger(orderId) || orderId <= 0) {
     return res.status(400).json({
@@ -363,35 +410,42 @@ router.post("/:id/cancel", async (req, res) => {
     });
   }
 
+  let client;
+  let transactionStarted = false;
+
   try {
     const pool = await getPool();
+    client = await pool.connect();
 
-    transaction = new sql.Transaction(pool);
-    await transaction.begin(sql.ISOLATION_LEVEL.SERIALIZABLE);
+    await client.query("BEGIN ISOLATION LEVEL SERIALIZABLE");
+    transactionStarted = true;
 
     // Lock the order and verify ownership.
-    const orderResult = await new sql.Request(transaction)
-      .input("OrderID", sql.Int, orderId)
-      .input("UserID", sql.Int, req.user.userId)
-      .query(`
-        SELECT OrderID, OrderStatus
-        FROM dbo.Orders WITH (UPDLOCK, HOLDLOCK)
-        WHERE OrderID = @OrderID
-          AND UserID = @UserID;
-      `);
+    const orderResult = await client.query(
+      `
+        SELECT "OrderID", "OrderStatus"
+        FROM "Orders"
+        WHERE "OrderID" = $1
+          AND "UserID" = $2
+        FOR UPDATE;
+      `,
+      [orderId, req.user.userId]
+    );
 
-    if (orderResult.recordset.length === 0) {
-      await transaction.rollback();
+    if (orderResult.rows.length === 0) {
+      await client.query("ROLLBACK");
+      transactionStarted = false;
 
       return res.status(404).json({
         message: "Order not found."
       });
     }
 
-    const currentStatus = orderResult.recordset[0].OrderStatus;
+    const currentStatus = orderResult.rows[0].OrderStatus;
 
     if (currentStatus !== "pending") {
-      await transaction.rollback();
+      await client.query("ROLLBACK");
+      transactionStarted = false;
 
       return res.status(400).json({
         message: "Only pending orders can be cancelled.",
@@ -400,27 +454,29 @@ router.post("/:id/cancel", async (req, res) => {
     }
 
     // Restore stock for all products in this order.
-    await new sql.Request(transaction)
-      .input("OrderID", sql.Int, orderId)
-      .query(`
-        UPDATE p
-        SET p.Stock = p.Stock + oi.Quantity
-        FROM dbo.Products AS p
-        INNER JOIN dbo.OrderItems AS oi
-          ON oi.ProductID = p.ProductID
-        WHERE oi.OrderID = @OrderID;
-      `);
+    await client.query(
+      `
+        UPDATE "Products" AS p
+        SET "Stock" = p."Stock" + oi."Quantity"
+        FROM "OrderItems" AS oi
+        WHERE oi."ProductID" = p."ProductID"
+          AND oi."OrderID" = $1;
+      `,
+      [orderId]
+    );
 
     // Update the order status.
-    await new sql.Request(transaction)
-      .input("OrderID", sql.Int, orderId)
-      .query(`
-        UPDATE dbo.Orders
-        SET OrderStatus = 'cancelled'
-        WHERE OrderID = @OrderID;
-      `);
+    await client.query(
+      `
+        UPDATE "Orders"
+        SET "OrderStatus" = 'cancelled'
+        WHERE "OrderID" = $1;
+      `,
+      [orderId]
+    );
 
-    await transaction.commit();
+    await client.query("COMMIT");
+    transactionStarted = false;
 
     return res.json({
       message: "Order cancelled successfully.",
@@ -428,20 +484,26 @@ router.post("/:id/cancel", async (req, res) => {
       previousStatus: currentStatus,
       status: "cancelled"
     });
+
   } catch (error) {
-    if (transaction) {
+    if (client && transactionStarted) {
       try {
-        await transaction.rollback();
-      } catch (_) {
-        // The transaction may already have rolled back.
+        await client.query("ROLLBACK");
+      } catch (rollbackError) {
+        console.error("Order rollback error:", rollbackError.message);
       }
     }
 
-    console.error("Customer cancel order error:", error);
+    console.error("Customer cancel order error:", error.message);
 
     return res.status(500).json({
       message: "Unable to cancel order."
     });
+
+  } finally {
+    if (client) {
+      client.release();
+    }
   }
 });
 

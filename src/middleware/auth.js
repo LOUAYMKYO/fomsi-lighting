@@ -1,6 +1,6 @@
 
 const jwt = require("jsonwebtoken");
-const { getPool, sql } = require("../config/db");
+const { getPool } = require("../config/db");
 
 async function authenticateToken(req, res, next) {
   const authHeader = req.headers.authorization;
@@ -13,6 +13,7 @@ async function authenticateToken(req, res, next) {
 
   if (!process.env.JWT_SECRET) {
     console.error("JWT_SECRET is missing.");
+
     return res.status(500).json({
       message: "Server configuration error."
     });
@@ -24,23 +25,27 @@ async function authenticateToken(req, res, next) {
 
     const pool = await getPool();
 
-    const result = await pool
-      .request()
-      .input("UserID", sql.Int, decoded.userId)
-      .query(`
-        SELECT UserID, FullName, Email, Role
-        FROM dbo.Users
-        WHERE UserID = @UserID
-          AND IsActive = 1
-      `);
+    const result = await pool.query(
+      `
+        SELECT
+          "UserID",
+          "FullName",
+          "Email",
+          "Role"
+        FROM "Users"
+        WHERE "UserID" = $1
+          AND "IsActive" = TRUE;
+      `,
+      [decoded.userId]
+    );
 
-    if (result.recordset.length === 0) {
+    if (result.rows.length === 0) {
       return res.status(401).json({
         message: "User account is inactive or no longer exists."
       });
     }
 
-    const user = result.recordset[0];
+    const user = result.rows[0];
 
     req.user = {
       userId: user.UserID,
@@ -49,17 +54,20 @@ async function authenticateToken(req, res, next) {
       role: user.Role
     };
 
-    next();
+    return next();
+
   } catch (error) {
-    if (error.name === "JsonWebTokenError" ||
-        error.name === "TokenExpiredError" ||
-        error.name === "NotBeforeError") {
+    if (
+      error.name === "JsonWebTokenError" ||
+      error.name === "TokenExpiredError" ||
+      error.name === "NotBeforeError"
+    ) {
       return res.status(401).json({
         message: "Invalid or expired token."
       });
     }
 
-    console.error("Authentication error:", error);
+    console.error("Authentication error:", error.message);
 
     return res.status(500).json({
       message: "Authentication service unavailable."
@@ -74,7 +82,7 @@ function requireAdmin(req, res, next) {
     });
   }
 
-  next();
+  return next();
 }
 
 module.exports = {
