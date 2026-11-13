@@ -1516,3 +1516,70 @@ footer {
         animation-duration: 0.01ms !important;
     }
 }
+
+/* =========================================
+   FOMSI - PRODUCT QUANTITY & WHATSAPP ORDER
+========================================= */
+
+.product-order {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    flex-wrap: wrap;
+    margin-top: 15px;
+}
+
+.product-quantity-label {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 14px;
+    font-weight: 600;
+}
+
+.product-quantity {
+    width: 75px;
+    height: 42px;
+    padding: 8px;
+    border: 1px solid #c9a45c;
+    border-radius: 6px;
+    background: #fff;
+    color: #222;
+    font-size: 15px;
+    text-align: center;
+    outline: none;
+    transition: border-color 0.2s, box-shadow 0.2s;
+}
+
+.product-quantity:focus {
+    border-color: #a77b32;
+    box-shadow: 0 0 0 3px rgba(201, 164, 92, 0.2);
+}
+
+.product-contact {
+    flex: 1;
+    min-width: 150px;
+    text-align: center;
+    text-decoration: none;
+}
+
+/* Mobile screens */
+@media (max-width: 480px) {
+    .product-order {
+        flex-direction: column;
+        align-items: stretch;
+    }
+
+    .product-quantity-label {
+        justify-content: space-between;
+    }
+
+    .product-quantity {
+        width: 90px;
+    }
+
+    .product-contact {
+        width: 100%;
+    }
+}
