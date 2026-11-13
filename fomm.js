@@ -5,7 +5,8 @@ document.addEventListener("DOMContentLoaded", () => {
     // =========================================================
     // CONFIGURATION
     // =========================================================
-const API = "/api";    const WHATSAPP = "213773864031";
+    const API = "/api";
+    const WHATSAPP = "213773864031";
     const TOKEN_KEY = "fomsiToken";
 
     let products = [];
@@ -322,8 +323,6 @@ const API = "/api";    const WHATSAPP = "213773864031";
     function updateAccountView() {
         const token = getToken();
 
-        // This only controls the interface. The backend must still
-        // validate the token and admin role for every protected action.
         isAdmin = isValidAdminToken(token);
 
         if (accountBtn) {
@@ -527,17 +526,27 @@ const API = "/api";    const WHATSAPP = "213773864031";
         }
 
         productsGrid.innerHTML = filteredProducts.map((product) => {
-            const id = Number(getField(product, "ProductID", "productId"));
             const name = getField(product, "Name", "name") || "Luminaire";
             const description = getField(product, "Description", "description");
-            const price = getField(product, "Price", "price");
+            const price = Number(getField(product, "Price", "price"));
             const imageURL = safeImageURL(
                 getField(product, "ImageURL", "imageURL", "imageUrl")
             );
             const categoryName = getCategoryName(product);
 
+            const validPrice = Number.isFinite(price) && price >= 0;
+
             const message = encodeURIComponent(
-                `Bonjour Fomsilighting, je souhaite des informations sur le produit : ${name}.`
+                `Bonjour Fomsilighting 👋
+
+Je souhaite commander :
+
+Produit : ${name}
+Prix unitaire : ${validPrice ? formatPrice(price) : "Prix sur demande"}
+Quantité : 1
+Total : ${validPrice ? formatPrice(price) : "Prix sur demande"}
+
+Merci de me confirmer la disponibilité.`
             );
 
             const imageMarkup = imageURL
@@ -569,14 +578,32 @@ const API = "/api";    const WHATSAPP = "213773864031";
                             </strong>
                         </div>
 
-                        <a
-                            class="btn btn-gold product-contact"
-                            href="https://wa.me/${WHATSAPP}?text=${message}"
-                            target="_blank"
-                            rel="noopener noreferrer"
-                        >
-                            Demander des informations
-                        </a>
+                        <div class="product-order">
+                            <label class="product-quantity-label">
+                                Quantité :
+                                <input
+                                    type="number"
+                                    class="product-quantity"
+                                    min="1"
+                                    max="99"
+                                    step="1"
+                                    value="1"
+                                    aria-label="Quantité de ${escapeHTML(name)}"
+                                >
+                            </label>
+
+                            <a
+                                class="btn btn-gold product-contact"
+                                data-whatsapp-order
+                                data-product-name="${escapeHTML(name)}"
+                                data-product-price="${validPrice ? price : ""}"
+                                href="https://wa.me/${WHATSAPP}?text=${message}"
+                                target="_blank"
+                                rel="noopener noreferrer"
+                            >
+                                Commander sur WhatsApp
+                            </a>
+                        </div>
                     </div>
                 </article>
             `;
@@ -590,6 +617,67 @@ const API = "/api";    const WHATSAPP = "213773864031";
                 placeholder.textContent = "✦ FOMSILIGHTING";
                 image.replaceWith(placeholder);
             }, { once: true });
+        });
+    }
+
+    // =========================================================
+    // WHATSAPP ORDER WITH QUANTITY AND TOTAL
+    // =========================================================
+    if (productsGrid) {
+        productsGrid.addEventListener("click", (event) => {
+            const button = event.target.closest("[data-whatsapp-order]");
+
+            if (!button) return;
+
+            const card = button.closest(".product-card");
+            if (!card) return;
+
+            const quantityInput = card.querySelector(".product-quantity");
+            if (!quantityInput) {
+                event.preventDefault();
+                return;
+            }
+
+            const quantity = Number(quantityInput.value);
+            const name = button.dataset.productName;
+            const price = Number(button.dataset.productPrice);
+
+            if (
+                !Number.isInteger(quantity) ||
+                quantity < 1 ||
+                quantity > 99
+            ) {
+                event.preventDefault();
+                alert("Veuillez choisir une quantité entre 1 et 99.");
+                quantityInput.focus();
+                return;
+            }
+
+            if (
+                button.dataset.productPrice === "" ||
+                !Number.isFinite(price) ||
+                price < 0
+            ) {
+                event.preventDefault();
+                alert("Prix du produit invalide.");
+                return;
+            }
+
+            const total = price * quantity;
+
+            const message = `Bonjour Fomsilighting 👋
+
+Je souhaite commander :
+
+💡 Produit : ${name}
+💰 Prix unitaire : ${formatPrice(price)}
+📦 Quantité : ${quantity}
+💵 Total : ${formatPrice(total)}
+
+Merci de me confirmer la disponibilité.`;
+
+            button.href =
+                `https://wa.me/${WHATSAPP}?text=${encodeURIComponent(message)}`;
         });
     }
 
@@ -1151,8 +1239,6 @@ const API = "/api";    const WHATSAPP = "213773864031";
 
     loadProducts();
 
-    // Restore the admin interface from the current session token.
-    // Protected API calls still validate the token on the backend.
     if (isAdmin) {
         loadAdminData().catch((error) => {
             showMessage(accountMessage, error.message, "error");
