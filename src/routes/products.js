@@ -33,7 +33,13 @@ router.get("/", async (req, res) => {
     return res.json(result.rows);
 
   } catch (error) {
-    console.error("Error fetching products:", error.message);
+    console.error("Error fetching products:", {
+      message: error.message,
+      code: error.code,
+      detail: error.detail,
+      table: error.table,
+      column: error.column
+    });
 
     return res.status(500).json({
       message: "Failed to fetch products."
