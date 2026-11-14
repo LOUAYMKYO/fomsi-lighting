@@ -1,4 +1,3 @@
-
 document.addEventListener("DOMContentLoaded", () => {
     "use strict";
 
@@ -51,9 +50,15 @@ document.addEventListener("DOMContentLoaded", () => {
     const adminProductList = $("#adminProductList");
 
     // Image preview elements
+    const productImageUpload = $("#productImageUpload");
     const productImagePreview = $("#productImagePreview");
     const productPreviewImg = $("#productPreviewImg");
     const productImageStatus = $("#productImageStatus");
+
+    // The image replacement control is only available while editing a product.
+    if (productImageUpload) {
+        productImageUpload.hidden = true;
+    }
 
     const categoryForm = $("#categoryForm");
     const categoryIdInput = $("#categoryId");
@@ -1051,6 +1056,10 @@ Merci de me confirmer la disponibilité.`;
         currentProductImageURL = null;
         clearProductImagePreview();
 
+        if (productImageUpload) {
+            productImageUpload.hidden = true;
+        }
+
         if (productStockInput) productStockInput.value = "0";
 
         if (saveProductBtn) {
@@ -1063,6 +1072,10 @@ Merci de me confirmer la disponibilité.`;
     }
 
     function startProductEdit(product) {
+        if (productImageUpload) {
+            productImageUpload.hidden = false;
+        }
+
         productIdInput.value = getField(product, "ProductID", "productId");
         productNameInput.value = getField(product, "Name", "name");
         productCategoryInput.value = getField(product, "CategoryID", "categoryId");

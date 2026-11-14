@@ -1691,3 +1691,7 @@ footer {
         max-height: 190px;
     }
 }
+/* Hide image upload until editing an existing product */
+.product-image-upload[hidden] {
+    display: none !important;
+}
