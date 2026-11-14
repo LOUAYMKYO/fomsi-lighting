@@ -9,7 +9,125 @@ const {
   requireAdmin
 } = require("../middleware/auth");
 
-// GET: Retrieve all active products
+const cloudinary = require("cloudinary").v2;
+const multer = require("multer");
+
+// =========================================================
+// CLOUDINARY CONFIGURATION
+// =========================================================
+
+cloudinary.config({
+  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+  api_key: process.env.CLOUDINARY_API_KEY,
+  api_secret: process.env.CLOUDINARY_API_SECRET
+});
+
+// =========================================================
+// IMAGE UPLOAD CONFIGURATION
+// =========================================================
+
+const storage = multer.memoryStorage();
+
+const upload = multer({
+  storage: storage,
+  limits: {
+    fileSize: 5 * 1024 * 1024 // Maximum 5 MB
+  },
+  fileFilter: (req, file, callback) => {
+    const allowedTypes = [
+      "image/jpeg",
+      "image/png",
+      "image/webp",
+      "image/gif",
+      "image/avif"
+    ];
+
+    if (!allowedTypes.includes(file.mimetype)) {
+      return callback(
+        new Error("Only JPG, PNG, WEBP, GIF and AVIF images are allowed.")
+      );
+    }
+
+    callback(null, true);
+  }
+});
+
+// =========================================================
+// POST: UPLOAD PRODUCT IMAGE (ADMIN ONLY)
+// =========================================================
+
+router.post(
+  "/upload",
+  authenticateToken,
+  requireAdmin,
+  (req, res, next) => {
+    upload.single("image")(req, res, (error) => {
+      if (error) {
+        return res.status(400).json({
+          message: error.message
+        });
+      }
+
+      next();
+    });
+  },
+  async (req, res) => {
+    try {
+      if (!req.file) {
+        return res.status(400).json({
+          message: "Please select an image."
+        });
+      }
+
+      if (
+        !process.env.CLOUDINARY_CLOUD_NAME ||
+        !process.env.CLOUDINARY_API_KEY ||
+        !process.env.CLOUDINARY_API_SECRET
+      ) {
+        console.error("Cloudinary environment variables are missing.");
+
+        return res.status(500).json({
+          message: "Image upload service is not configured."
+        });
+      }
+
+      const result = await new Promise((resolve, reject) => {
+        const stream = cloudinary.uploader.upload_stream(
+          {
+            folder: "fomsi-lighting/products",
+            resource_type: "image"
+          },
+          (error, uploadedImage) => {
+            if (error) {
+              return reject(error);
+            }
+
+            resolve(uploadedImage);
+          }
+        );
+
+        stream.end(req.file.buffer);
+      });
+
+      return res.status(201).json({
+        message: "Image uploaded successfully.",
+        imageURL: result.secure_url
+      });
+
+    } catch (error) {
+      console.error("Cloudinary upload error:", error.message);
+
+      return res.status(500).json({
+        message: "Failed to upload image."
+      });
+    }
+  }
+);
+
+// =========================================================
+// GET: RETRIEVE ALL ACTIVE PRODUCTS
+// =========================================================
+
 router.get("/", async (req, res) => {
   try {
     const pool = await getPool();
@@ -47,7 +165,10 @@ router.get("/", async (req, res) => {
   }
 });
 
-// POST: Create a new product (Admin only)
+// =========================================================
+// POST: CREATE A NEW PRODUCT (ADMIN ONLY)
+// =========================================================
+
 router.post("/", authenticateToken, requireAdmin, async (req, res) => {
   try {
     const {
@@ -137,7 +258,10 @@ router.post("/", authenticateToken, requireAdmin, async (req, res) => {
   }
 });
 
-// PUT: Update an existing product (Admin only)
+// =========================================================
+// PUT: UPDATE AN EXISTING PRODUCT (ADMIN ONLY)
+// =========================================================
+
 router.put("/:id", authenticateToken, requireAdmin, async (req, res) => {
   try {
     const productId = Number(req.params.id);
@@ -247,7 +371,10 @@ router.put("/:id", authenticateToken, requireAdmin, async (req, res) => {
   }
 });
 
-// DELETE: Soft-delete a product (Admin only)
+// =========================================================
+// DELETE: SOFT-DELETE A PRODUCT (ADMIN ONLY)
+// =========================================================
+
 router.delete("/:id", authenticateToken, requireAdmin, async (req, res) => {
   try {
     const productId = Number(req.params.id);

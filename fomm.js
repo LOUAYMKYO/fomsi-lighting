@@ -14,6 +14,10 @@ document.addEventListener("DOMContentLoaded", () => {
     let currentFilter = "all";
     let isAdmin = false;
 
+    // Current product image URL (used when editing without a new image)
+    let currentProductImageURL = null;
+    let previewObjectURL = null;
+
     const $ = (selector) => document.querySelector(selector);
     const $$ = (selector) => [...document.querySelectorAll(selector)];
 
@@ -45,6 +49,11 @@ document.addEventListener("DOMContentLoaded", () => {
     const saveProductBtn = $("#saveProductBtn");
     const cancelProductEditBtn = $("#cancelProductEdit");
     const adminProductList = $("#adminProductList");
+
+    // Image preview elements
+    const productImagePreview = $("#productImagePreview");
+    const productPreviewImg = $("#productPreviewImg");
+    const productImageStatus = $("#productImageStatus");
 
     const categoryForm = $("#categoryForm");
     const categoryIdInput = $("#categoryId");
@@ -226,6 +235,7 @@ document.addEventListener("DOMContentLoaded", () => {
             if (response.status === 401 && getToken()) {
                 clearToken();
                 updateAccountView();
+
                 showMessage(
                     accountMessage,
                     "Votre session a expiré. Connectez-vous à nouveau.",
@@ -241,6 +251,156 @@ document.addEventListener("DOMContentLoaded", () => {
         }
 
         return result;
+    }
+
+    // =========================================================
+    // CLOUDINARY IMAGE UPLOAD
+    // =========================================================
+    async function uploadProductImage(file) {
+        if (!file) {
+            throw new Error("Veuillez sélectionner une image.");
+        }
+
+        const formData = new FormData();
+        formData.append("image", file);
+
+        const token = getToken();
+
+        if (!token) {
+            throw new Error("Votre session a expiré. Connectez-vous à nouveau.");
+        }
+
+        let response;
+
+        try {
+            response = await fetch(`${API}/products/upload`, {
+                method: "POST",
+                headers: {
+                    Authorization: `Bearer ${token}`
+                },
+                body: formData
+            });
+        } catch {
+            throw new Error("Impossible de contacter le serveur pour envoyer l'image.");
+        }
+
+        const contentType = response.headers.get("content-type") || "";
+        let result = {};
+
+        if (contentType.includes("application/json")) {
+            result = await response.json();
+        } else {
+            const text = await response.text();
+            result = text ? { message: text } : {};
+        }
+
+        if (!response.ok) {
+            throw new Error(
+                result.message ||
+                result.error ||
+                `Échec de l'envoi de l'image (${response.status}).`
+            );
+        }
+
+        const imageURL = safeImageURL(
+            getField(result, "imageUrl", "imageURL")
+        );
+
+        if (!imageURL) {
+            throw new Error("Le serveur n'a pas retourné une URL d'image valide.");
+        }
+
+        return imageURL;
+    }
+
+    // =========================================================
+    // PRODUCT IMAGE PREVIEW
+    // =========================================================
+    function clearProductImagePreview() {
+        if (previewObjectURL) {
+            URL.revokeObjectURL(previewObjectURL);
+            previewObjectURL = null;
+        }
+
+        if (productPreviewImg) {
+            productPreviewImg.src = "";
+        }
+
+        if (productImagePreview) {
+            productImagePreview.hidden = true;
+        }
+
+        if (productImageStatus) {
+            productImageStatus.textContent = "";
+        }
+    }
+
+    function showProductImagePreview(imageURL, message = "") {
+        if (!productImagePreview || !productPreviewImg) return;
+
+        productPreviewImg.src = imageURL;
+        productImagePreview.hidden = false;
+
+        if (productImageStatus) {
+            productImageStatus.textContent = message;
+        }
+    }
+
+    if (productImageInput) {
+        productImageInput.addEventListener("change", () => {
+            const file = productImageInput.files?.[0];
+
+            if (!file) return;
+
+            const allowedTypes = [
+                "image/jpeg",
+                "image/png",
+                "image/webp",
+                "image/gif",
+                "image/avif"
+            ];
+
+            if (!allowedTypes.includes(file.type)) {
+                productImageInput.value = "";
+
+                showMessage(
+                    accountMessage,
+                    "Format invalide. Utilisez JPG, PNG, WEBP, GIF ou AVIF.",
+                    "error"
+                );
+
+                return;
+            }
+
+            if (file.size > 5 * 1024 * 1024) {
+                productImageInput.value = "";
+
+                showMessage(
+                    accountMessage,
+                    "L'image ne doit pas dépasser 5 MB.",
+                    "error"
+                );
+
+                return;
+            }
+
+            if (previewObjectURL) {
+                URL.revokeObjectURL(previewObjectURL);
+            }
+
+            previewObjectURL = URL.createObjectURL(file);
+
+            showProductImagePreview(
+                previewObjectURL,
+                "Nouvelle image sélectionnée. Elle sera envoyée lors de l'enregistrement."
+            );
+
+            showMessage(
+                accountMessage,
+                "Image sélectionnée avec succès. Vous pouvez enregistrer le produit.",
+                "success"
+            );
+        });
     }
 
     // =========================================================
@@ -888,6 +1048,9 @@ Merci de me confirmer la disponibilité.`;
         productForm.reset();
         productIdInput.value = "";
 
+        currentProductImageURL = null;
+        clearProductImagePreview();
+
         if (productStockInput) productStockInput.value = "0";
 
         if (saveProductBtn) {
@@ -907,9 +1070,23 @@ Merci de me confirmer la disponibilité.`;
         productPriceInput.value = getField(product, "Price", "price");
         productStockInput.value = getField(product, "Stock", "stock");
 
-        productImageInput.value = safeImageURL(
+        // Keep the current image URL for editing.
+        // A new image will replace it only if the admin selects another file.
+        currentProductImageURL = safeImageURL(
             getField(product, "ImageURL", "imageURL", "imageUrl")
         );
+
+        // File inputs cannot be filled with an existing URL.
+        productImageInput.value = "";
+
+        clearProductImagePreview();
+
+        if (currentProductImageURL) {
+            showProductImagePreview(
+                currentProductImageURL,
+                "Image actuelle du produit. Sélectionnez une nouvelle image pour la remplacer."
+            );
+        }
 
         if (saveProductBtn) {
             saveProductBtn.textContent = "Enregistrer les modifications";
@@ -939,14 +1116,16 @@ Merci de me confirmer la disponibilité.`;
             }
 
             const id = productIdInput.value;
+            const selectedFile = productImageInput.files?.[0] || null;
 
+            // Validate product information before uploading the image.
             const payload = {
                 CategoryID: Number(productCategoryInput.value),
                 Name: productNameInput.value.trim(),
                 Description: productDescriptionInput.value.trim(),
                 Price: Number(productPriceInput.value),
                 Stock: Number(productStockInput.value || 0),
-                ImageURL: productImageInput.value.trim() || null
+                ImageURL: currentProductImageURL
             };
 
             if (
@@ -965,9 +1144,69 @@ Merci de me confirmer la disponibilité.`;
                 return;
             }
 
-            saveProductBtn.disabled = true;
+            // Validate the selected image.
+            if (selectedFile) {
+                const allowedTypes = [
+                    "image/jpeg",
+                    "image/png",
+                    "image/webp",
+                    "image/gif",
+                    "image/avif"
+                ];
+
+                if (!allowedTypes.includes(selectedFile.type)) {
+                    showMessage(
+                        accountMessage,
+                        "Format d'image invalide. Utilisez JPG, PNG, WEBP, GIF ou AVIF.",
+                        "error"
+                    );
+                    return;
+                }
+
+                if (selectedFile.size > 5 * 1024 * 1024) {
+                    showMessage(
+                        accountMessage,
+                        "L'image ne doit pas dépasser 5 MB.",
+                        "error"
+                    );
+                    return;
+                }
+            }
+
+            if (saveProductBtn) {
+                saveProductBtn.disabled = true;
+            }
 
             try {
+                // Step 1: Upload the selected image to Cloudinary.
+                if (selectedFile) {
+                    showMessage(
+                        accountMessage,
+                        "Envoi de l'image vers Cloudinary en cours...",
+                        "info"
+                    );
+
+                    if (productImageStatus) {
+                        productImageStatus.textContent = "Envoi de l'image en cours...";
+                    }
+
+                    payload.ImageURL = await uploadProductImage(selectedFile);
+
+                    currentProductImageURL = payload.ImageURL;
+
+                    showProductImagePreview(
+                        payload.ImageURL,
+                        "Image envoyée avec succès !"
+                    );
+                }
+
+                // Step 2: Save the product with its Cloudinary URL.
+                showMessage(
+                    accountMessage,
+                    "Enregistrement du produit en cours...",
+                    "info"
+                );
+
                 await apiRequest(
                     id ? `/products/${encodeURIComponent(id)}` : "/products",
                     {
@@ -984,10 +1223,18 @@ Merci de me confirmer la disponibilité.`;
 
                 resetProductForm();
                 await loadAdminData();
+
             } catch (error) {
                 showMessage(accountMessage, error.message, "error");
+
+                if (productImageStatus && selectedFile) {
+                    productImageStatus.textContent = error.message;
+                }
+
             } finally {
-                saveProductBtn.disabled = false;
+                if (saveProductBtn) {
+                    saveProductBtn.disabled = false;
+                }
             }
         });
     }

@@ -865,15 +865,23 @@
                         value="0"
                     >
 
+<label for="productImage">Image du produit</label>
 
-                    <label for="productImage">URL de l'image</label>
+<input
+    id="productImage"
+    type="file"
+    accept="image/jpeg,image/png,image/webp,image/gif,image/avif"
+>
 
-                    <input
-                        id="productImage"
-                        type="url"
-                        maxlength="1000"
-                        placeholder="https://..."
-                    >
+<div id="productImagePreview" style="margin-top: 12px;" hidden>
+    <img
+        id="productPreviewImg"
+        src=""
+        alt="Aperçu de l'image du produit"
+        style="width: 100%; max-width: 220px; height: 160px; object-fit: cover; border-radius: 10px;"
+    >
+    <p id="productImageStatus" role="status"></p>
+</div>
 
 
                     <div class="admin-form-actions">
