@@ -1,3 +1,4 @@
+
 /* =====================================================
    RESET
 ===================================================== */
@@ -33,7 +34,6 @@ button {
     font-family: inherit;
 }
 
-/* Ensure hidden elements remain hidden */
 [hidden] {
     display: none !important;
 }
@@ -365,7 +365,6 @@ a:focus-visible {
     transition: transform 0.35s, border-color 0.35s;
 }
 
-/* Reset browser defaults when category cards are buttons */
 button.category-card {
     display: block;
     width: 100%;
@@ -1151,7 +1150,6 @@ footer {
    FOMSI LIGHTING — ADMIN DASHBOARD
    Luxury black & gold theme
 ========================================= */
-
 .admin-panel {
     width: min(960px, calc(100vw - 32px));
     max-width: 960px;
@@ -1252,7 +1250,6 @@ footer {
 }
 
 /* Admin forms */
-
 .admin-panel form {
     display: grid;
     grid-template-columns: 1fr;
@@ -1355,7 +1352,6 @@ footer {
 }
 
 /* Product and category lists */
-
 .admin-list {
     display: grid;
     gap: 14px;
@@ -1431,7 +1427,6 @@ footer {
 }
 
 /* Status messages */
-
 .panel-message {
     margin-top: 14px;
     color: #e3c981;
@@ -1448,7 +1443,6 @@ footer {
 }
 
 /* Close button */
-
 .admin-panel .panel-close {
     position: sticky;
     top: 0;
@@ -1471,8 +1465,7 @@ footer {
     background: #302819;
 }
 
-/* Mobile layout */
-
+/* Admin mobile layout */
 @media (max-width: 600px) {
     .admin-panel {
         width: calc(100vw - 20px);
@@ -1520,7 +1513,6 @@ footer {
 /* =========================================
    FOMSI - PRODUCT QUANTITY & WHATSAPP ORDER
 ========================================= */
-
 .product-order {
     display: flex;
     align-items: center;
@@ -1564,7 +1556,6 @@ footer {
     text-decoration: none;
 }
 
-/* Mobile screens */
 @media (max-width: 480px) {
     .product-order {
         flex-direction: column;
@@ -1585,65 +1576,80 @@ footer {
 }
 
 /* =========================================
-   FOMSI — PRODUCT IMAGE UPLOAD & PREVIEW
+   PRODUCT IMAGE REPLACEMENT BUTTON
 ========================================= */
+.product-image-upload {
+    display: grid;
+    gap: 10px;
+    margin-top: 12px;
+}
 
-/* Image upload input */
+.product-image-upload > label:first-child {
+    color: #d9cba9;
+    font-weight: 600;
+}
+
+.image-upload-help {
+    color: #a7a7a7;
+    font-size: 13px;
+}
+
+/* Hide native input but keep it accessible through its label */
 #productImage {
-    width: 100%;
-    min-height: 48px;
-    padding: 12px;
-    border: 1px dashed rgba(214, 170, 85, 0.65);
-    border-radius: 9px;
-    background: #171715;
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    opacity: 0;
+    overflow: hidden;
+    pointer-events: none;
+}
+
+.image-upload-button {
+    display: inline-flex;
+    justify-content: center;
+    align-items: center;
+    width: fit-content;
+    min-height: 46px;
+    padding: 12px 18px;
+    border: 1px solid #c5a15a;
+    border-radius: 8px;
+    background: #211d14;
     color: #e8c477;
-    cursor: pointer;
-    transition: border-color 0.25s ease, background 0.25s ease;
-}
-
-#productImage:hover {
-    border-color: #e8c477;
-    background: #211e17;
-}
-
-#productImage::file-selector-button {
-    margin-right: 12px;
-    padding: 9px 14px;
-    border: 0;
-    border-radius: 6px;
-    background: #c5a15a;
-    color: #17140e;
-    font-family: inherit;
     font-weight: 700;
     cursor: pointer;
-    transition: background 0.2s ease;
+    transition: 0.25s ease;
 }
 
-#productImage::file-selector-button:hover {
-    background: #dfbf79;
+.image-upload-button:hover {
+    background: #c5a15a;
+    color: #17140e;
 }
 
-/* Image preview container */
+.image-upload-button:focus-visible {
+    outline: 2px solid #e8c477;
+    outline-offset: 4px;
+}
+
+/* Image preview */
 #productImagePreview {
-    margin-top: 15px;
+    margin-top: 12px;
     padding: 12px;
     border: 1px solid rgba(214, 170, 85, 0.3);
     border-radius: 10px;
     background: #171715;
 }
 
-/* Preview image */
 #productPreviewImg {
+    display: block;
     width: 100%;
     max-width: 260px;
-    max-height: 220px;
-    margin: 0 auto;
+    height: 180px;
+    margin: auto;
     object-fit: contain;
     border-radius: 8px;
-    background: #10100e;
 }
 
-/* Upload status */
 #productImageStatus {
     display: block;
     margin-top: 10px;
@@ -1657,7 +1663,7 @@ footer {
     display: none;
 }
 
-/* Admin product list image thumbnails */
+/* Admin product list thumbnails */
 .admin-list .product-item img,
 .admin-list article img {
     width: 100%;
@@ -1669,22 +1675,15 @@ footer {
     border-radius: 8px;
 }
 
-/* Better spacing for admin product actions */
 .admin-list .product-item button,
 .admin-list article button {
     margin-top: 12px;
 }
 
-/* Mobile image upload */
+/* Product image upload mobile */
 @media (max-width: 600px) {
-    #productImage {
-        font-size: 12px;
-        padding: 10px;
-    }
-
-    #productImage::file-selector-button {
-        margin-bottom: 8px;
-        padding: 8px 10px;
+    .image-upload-button {
+        width: 100%;
     }
 
     #productPreviewImg {

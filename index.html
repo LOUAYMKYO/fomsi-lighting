@@ -865,23 +865,36 @@
                         value="0"
                     >
 
-<label for="productImage">Image du produit</label>
 
-<input
-    id="productImage"
-    type="file"
-    accept="image/jpeg,image/png,image/webp,image/gif,image/avif"
->
+<div class="product-image-upload">
 
-<div id="productImagePreview" style="margin-top: 12px;" hidden>
-    <img
-        id="productPreviewImg"
-        src=""
-        alt="Aperçu de l'image du produit"
-        style="width: 100%; max-width: 220px; height: 160px; object-fit: cover; border-radius: 10px;"
+    <label for="productImage">Image du produit</label>
+
+    <p class="image-upload-help">
+        Choisissez une image depuis votre ordinateur ou téléphone.
+    </p>
+
+    <label for="productImage" class="image-upload-button">
+        ✦ Choisir / Remplacer l'image
+    </label>
+
+    <input
+        id="productImage"
+        type="file"
+        accept="image/jpeg,image/png,image/webp,image/gif,image/avif"
     >
-    <p id="productImageStatus" role="status"></p>
+
+    <div id="productImagePreview" hidden>
+        <img
+            id="productPreviewImg"
+            src=""
+            alt="Aperçu de l'image du produit"
+        >
+        <p id="productImageStatus" role="status"></p>
+    </div>
+
 </div>
+
 
 
                     <div class="admin-form-actions">
