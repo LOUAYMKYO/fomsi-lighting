@@ -1,3 +1,4 @@
+
 document.addEventListener("DOMContentLoaded", () => {
     "use strict";
 
@@ -55,10 +56,8 @@ document.addEventListener("DOMContentLoaded", () => {
     const productPreviewImg = $("#productPreviewImg");
     const productImageStatus = $("#productImageStatus");
 
-    // The image replacement control is only available while editing a product.
-    if (productImageUpload) {
-        productImageUpload.hidden = true;
-    }
+    // IMPORTANT:
+    // The image upload section stays visible when adding or editing products.
 
     const categoryForm = $("#categoryForm");
     const categoryIdInput = $("#categoryId");
@@ -1056,8 +1055,9 @@ Merci de me confirmer la disponibilité.`;
         currentProductImageURL = null;
         clearProductImagePreview();
 
+        // FIX: Keep image upload visible when adding a new product.
         if (productImageUpload) {
-            productImageUpload.hidden = true;
+            productImageUpload.hidden = false;
         }
 
         if (productStockInput) productStockInput.value = "0";
@@ -1072,6 +1072,7 @@ Merci de me confirmer la disponibilité.`;
     }
 
     function startProductEdit(product) {
+        // Image upload is also visible when editing a product.
         if (productImageUpload) {
             productImageUpload.hidden = false;
         }
