@@ -22,6 +22,101 @@ cloudinary.config({
   api_secret: process.env.CLOUDINARY_API_SECRET
 });
 
+const CLOUDINARY_FOLDER = "fomsi-lighting/products";
+
+// =========================================================
+// CLOUDINARY IMAGE HELPERS
+// =========================================================
+
+// Extract the Cloudinary public ID only from our product folder.
+// This prevents accidentally deleting external images.
+
+function getProductImagePublicId(imageURL) {
+  try {
+    if (typeof imageURL !== "string" || !imageURL.trim()) {
+      return null;
+    }
+
+    const parsedURL = new URL(imageURL);
+
+    if (parsedURL.hostname !== "res.cloudinary.com") {
+      return null;
+    }
+
+    const cloudName = process.env.CLOUDINARY_CLOUD_NAME;
+
+    if (!cloudName) {
+      return null;
+    }
+
+    const uploadPath = `/${cloudName}/image/upload/`;
+    const uploadIndex = parsedURL.pathname.indexOf(uploadPath);
+
+    if (uploadIndex === -1) {
+      return null;
+    }
+
+    let parts = parsedURL.pathname
+      .substring(uploadIndex + uploadPath.length)
+      .split("/")
+      .filter(Boolean);
+
+    // Cloudinary URLs normally contain a version such as v123456.
+    const versionIndex = parts.findIndex(part => /^v\d+$/.test(part));
+
+    if (versionIndex === -1) {
+      return null;
+    }
+
+    parts = parts.slice(versionIndex + 1);
+
+    if (parts.length === 0) {
+      return null;
+    }
+
+    let publicId = decodeURIComponent(parts.join("/"));
+
+    // Remove the file extension.
+    publicId = publicId.replace(/\.[^/.]+$/, "");
+
+    if (!publicId.startsWith(`${CLOUDINARY_FOLDER}/`)) {
+      return null;
+    }
+
+    return publicId;
+
+  } catch (error) {
+    console.error("Could not extract Cloudinary public ID:", error.message);
+    return null;
+  }
+}
+
+// Delete an image from Cloudinary safely.
+
+async function deleteProductImage(imageURL) {
+  const publicId = getProductImagePublicId(imageURL);
+
+  if (!publicId) {
+    return;
+  }
+
+  try {
+    const result = await cloudinary.uploader.destroy(publicId, {
+      resource_type: "image",
+      invalidate: true
+    });
+
+    if (result.result === "ok" || result.result === "not found") {
+      console.log(`Cloudinary image deletion: ${result.result} (${publicId})`);
+    } else {
+      console.error("Cloudinary image deletion returned:", result);
+    }
+
+  } catch (error) {
+    console.error("Cloudinary image deletion failed:", error.message);
+  }
+}
+
 // =========================================================
 // IMAGE UPLOAD CONFIGURATION
 // =========================================================
@@ -29,9 +124,9 @@ cloudinary.config({
 const storage = multer.memoryStorage();
 
 const upload = multer({
-  storage: storage,
+  storage,
   limits: {
-    fileSize: 5 * 1024 * 1024 // Maximum 5 MB
+    fileSize: 5 * 1024 * 1024
   },
   fileFilter: (req, file, callback) => {
     const allowedTypes = [
@@ -61,7 +156,7 @@ router.post(
   authenticateToken,
   requireAdmin,
   (req, res, next) => {
-    upload.single("image")(req, res, (error) => {
+    upload.single("image")(req, res, error => {
       if (error) {
         return res.status(400).json({
           message: error.message
@@ -84,8 +179,6 @@ router.post(
         !process.env.CLOUDINARY_API_KEY ||
         !process.env.CLOUDINARY_API_SECRET
       ) {
-        console.error("Cloudinary environment variables are missing.");
-
         return res.status(500).json({
           message: "Image upload service is not configured."
         });
@@ -94,7 +187,7 @@ router.post(
       const result = await new Promise((resolve, reject) => {
         const stream = cloudinary.uploader.upload_stream(
           {
-            folder: "fomsi-lighting/products",
+            folder: CLOUDINARY_FOLDER,
             resource_type: "image"
           },
           (error, uploadedImage) => {
@@ -259,7 +352,7 @@ router.post("/", authenticateToken, requireAdmin, async (req, res) => {
 });
 
 // =========================================================
-// PUT: UPDATE AN EXISTING PRODUCT (ADMIN ONLY)
+// PUT: UPDATE PRODUCT AND REPLACE OLD IMAGE
 // =========================================================
 
 router.put("/:id", authenticateToken, requireAdmin, async (req, res) => {
@@ -281,11 +374,7 @@ router.put("/:id", authenticateToken, requireAdmin, async (req, res) => {
       ImageURL
     } = req.body;
 
-    if (
-      CategoryID == null ||
-      !Name ||
-      Price == null
-    ) {
+    if (CategoryID == null || !Name || Price == null) {
       return res.status(400).json({
         message: "CategoryID, Name, and Price are required."
       });
@@ -311,6 +400,26 @@ router.put("/:id", authenticateToken, requireAdmin, async (req, res) => {
 
     const pool = await getPool();
 
+    // First, retrieve the existing image URL.
+    const oldProduct = await pool.query(
+      `
+        SELECT "ImageURL"
+        FROM "Products"
+        WHERE "ProductID" = $1
+          AND "IsActive" = TRUE;
+      `,
+      [productId]
+    );
+
+    if (oldProduct.rows.length === 0) {
+      return res.status(404).json({
+        message: "Active product not found."
+      });
+    }
+
+    const oldImageURL = oldProduct.rows[0].ImageURL;
+
+    // Update the product in PostgreSQL.
     const result = await pool.query(
       `
         UPDATE "Products"
@@ -351,6 +460,13 @@ router.put("/:id", authenticateToken, requireAdmin, async (req, res) => {
       });
     }
 
+    const newImageURL = result.rows[0].ImageURL;
+
+    // Delete the old image only if a different image was saved.
+    if (oldImageURL && oldImageURL !== newImageURL) {
+      await deleteProductImage(oldImageURL);
+    }
+
     return res.json({
       message: "Product updated successfully.",
       product: result.rows[0]
@@ -372,7 +488,7 @@ router.put("/:id", authenticateToken, requireAdmin, async (req, res) => {
 });
 
 // =========================================================
-// DELETE: SOFT-DELETE A PRODUCT (ADMIN ONLY)
+// DELETE: SOFT-DELETE PRODUCT AND DELETE ITS CLOUDINARY IMAGE
 // =========================================================
 
 router.delete("/:id", authenticateToken, requireAdmin, async (req, res) => {
@@ -387,6 +503,26 @@ router.delete("/:id", authenticateToken, requireAdmin, async (req, res) => {
 
     const pool = await getPool();
 
+    // Retrieve the product image before deactivating the product.
+    const oldProduct = await pool.query(
+      `
+        SELECT "ImageURL"
+        FROM "Products"
+        WHERE "ProductID" = $1
+          AND "IsActive" = TRUE;
+      `,
+      [productId]
+    );
+
+    if (oldProduct.rows.length === 0) {
+      return res.status(404).json({
+        message: "Active product not found."
+      });
+    }
+
+    const oldImageURL = oldProduct.rows[0].ImageURL;
+
+    // Keep the existing soft-delete behavior.
     const result = await pool.query(
       `
         UPDATE "Products"
@@ -401,6 +537,11 @@ router.delete("/:id", authenticateToken, requireAdmin, async (req, res) => {
       return res.status(404).json({
         message: "Active product not found."
       });
+    }
+
+    // Delete the associated Cloudinary image.
+    if (oldImageURL) {
+      await deleteProductImage(oldImageURL);
     }
 
     return res.json({

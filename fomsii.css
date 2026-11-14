@@ -1583,3 +1583,112 @@ footer {
         width: 100%;
     }
 }
+
+/* =========================================
+   FOMSI — PRODUCT IMAGE UPLOAD & PREVIEW
+========================================= */
+
+/* Image upload input */
+#productImage {
+    width: 100%;
+    min-height: 48px;
+    padding: 12px;
+    border: 1px dashed rgba(214, 170, 85, 0.65);
+    border-radius: 9px;
+    background: #171715;
+    color: #e8c477;
+    cursor: pointer;
+    transition: border-color 0.25s ease, background 0.25s ease;
+}
+
+#productImage:hover {
+    border-color: #e8c477;
+    background: #211e17;
+}
+
+#productImage::file-selector-button {
+    margin-right: 12px;
+    padding: 9px 14px;
+    border: 0;
+    border-radius: 6px;
+    background: #c5a15a;
+    color: #17140e;
+    font-family: inherit;
+    font-weight: 700;
+    cursor: pointer;
+    transition: background 0.2s ease;
+}
+
+#productImage::file-selector-button:hover {
+    background: #dfbf79;
+}
+
+/* Image preview container */
+#productImagePreview {
+    margin-top: 15px;
+    padding: 12px;
+    border: 1px solid rgba(214, 170, 85, 0.3);
+    border-radius: 10px;
+    background: #171715;
+}
+
+/* Preview image */
+#productPreviewImg {
+    width: 100%;
+    max-width: 260px;
+    max-height: 220px;
+    margin: 0 auto;
+    object-fit: contain;
+    border-radius: 8px;
+    background: #10100e;
+}
+
+/* Upload status */
+#productImageStatus {
+    display: block;
+    margin-top: 10px;
+    color: #d6aa55;
+    font-size: 13px;
+    line-height: 1.6;
+    overflow-wrap: anywhere;
+}
+
+#productImageStatus:empty {
+    display: none;
+}
+
+/* Admin product list image thumbnails */
+.admin-list .product-item img,
+.admin-list article img {
+    width: 100%;
+    max-width: 110px;
+    height: 100px;
+    margin: 10px 0;
+    object-fit: cover;
+    border: 1px solid rgba(214, 170, 85, 0.25);
+    border-radius: 8px;
+}
+
+/* Better spacing for admin product actions */
+.admin-list .product-item button,
+.admin-list article button {
+    margin-top: 12px;
+}
+
+/* Mobile image upload */
+@media (max-width: 600px) {
+    #productImage {
+        font-size: 12px;
+        padding: 10px;
+    }
+
+    #productImage::file-selector-button {
+        margin-bottom: 8px;
+        padding: 8px 10px;
+    }
+
+    #productPreviewImg {
+        max-width: 100%;
+        max-height: 190px;
+    }
+}
